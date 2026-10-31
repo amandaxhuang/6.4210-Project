@@ -53,20 +53,20 @@ FINGER_CLOSED = FINGER_CONTACT - FINGER_SQUEEZE
 # Robot: iiwa14 joined to world origin, with a WSG gripper joined to its last link.
 # default_joint_positions is the pose the arm starts in and is held at.
 # Currently: the underhand start of toss.py's default toss: hand low and close
-# to the robot, palm up (gripper about 23 degrees from vertical), with the
-# pinch point at about [0.55, 0, 0.39] m.  
+# to the robot, palm up (gripper about 32 degrees from vertical), with the
+# pinch point at about [0.59, 0, 0.37] m.
 ROBOT = """directives:
 - add_model:
     name: iiwa
     file: package://drake_models/iiwa_description/sdf/iiwa14_no_collision.sdf
     default_joint_positions:
-        iiwa_joint_1: [-2.267]
+        iiwa_joint_1: [-2.242]
         iiwa_joint_2: [-1.557]
         iiwa_joint_3: [2.186]
-        iiwa_joint_4: [-1.595]
-        iiwa_joint_5: [-1.365]
-        iiwa_joint_6: [1.845]
-        iiwa_joint_7: [-0.95]
+        iiwa_joint_4: [-1.582]
+        iiwa_joint_5: [-1.39]
+        iiwa_joint_6: [1.664]
+        iiwa_joint_7: [-0.963]
 - add_weld:
     parent: world
     child: iiwa::iiwa_link_0
@@ -237,7 +237,7 @@ def place_ball_in_gripper(system, context):
 def run(duration: float = 3.0):
     """Simulate the held ball for `duration` seconds and print where it ends.
 
-    If the grip works, the ball ends where it started, about 0.39 m up.  A
+    If the grip works, the ball ends where it started, about 0.37 m up.  A
     final height near BALL_RADIUS (0.04 m) means it was dropped onto the floor.
     """
     system = build_system()
