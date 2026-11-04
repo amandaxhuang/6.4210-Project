@@ -13,9 +13,9 @@
 decision: how toss noise is applied (§12), the nominal σ_p (§14), and gripper timing, which is now
 tighter than the pad height (§10).
 
-**Implementation notes, 2026-11-04.** Steps 1 to 7 of §16 are built on branch `approach-a`. Measuring them
+**Implementation notes, 2026-11-04.** Steps 1 to 9 of §16 are built on branch `approach-a`. Measuring them
 changed a few things below, which are left as written for the record. The evidence is in
-`results/catch_timing.md` and `planning/assumptions.md`.
+`results/catch_timing.md`, `results/approach_a.md` and `planning/assumptions.md`.
 
 - **The close trigger replaces §10's arithmetic.** `T_GRIPPER` is gone. The trigger looks up the gripper's
   response by command phase and aims the pads 3 ms before the ball (`catch.close_command_time`).
@@ -24,14 +24,21 @@ changed a few things below, which are left as written for the record. The eviden
   §14's error budget grows accordingly.
 - **The ball's real tolerances differ from §2's.** Sideways tolerance depends on the close timing, and the
   timing window is about 22 ms rather than 7 ms, but only 3 ms of that holds the ball between the pads; the rest
-  perches it on their edges. §13.3 counts that as a catch, which needs a team decision, along with what grip force
-  counts as non-zero. See `results/catch_timing.md`.
-- **"Bit-identical" (A4, A5) isn't achievable.** Drake repeats to about 1e-12 m, so compare within a tolerance.
+  perches it on their edges. §13.3 stays the headline, with a 1 N grip threshold and perches counted, and every table
+  reports on-pad catches beside it. See `results/catch_timing.md`.
+- **"Bit-identical" (A4, A5) isn't achievable.** Drake repeats to about 1e-12 m, and the solver can turn that into about
+  0.2 mm. Over 600 repeated trials no outcome changed, so outcomes compare exactly and measurements within a tolerance:
+  `planning/assumptions.md`.
 - **Q2 is answered:** the driver stays `position_only`.
 - **Q8 is answered:** toss noise goes onto the ball's velocity 8 ms after release, so §12's discards and
   `toss_infeasible` don't arise. A4 passes.
-- **At the nominal cell of §13.4, the baseline beats A**, because the one-shot fit's error exceeds the toss noise. This
-  bears on Q3. σ_lat = 0.08 m/s doesn't defeat the arm as §12 expected. See `results/catch_timing.md`.
+- **At the nominal cell of §13.4, the baseline beats A**, 81 to 16 of 100, because the one-shot fit's error exceeds the
+  toss noise. σ_lat = 0.08 m/s doesn't defeat the arm as §12 expected. See `results/approach_a.md`.
+- **§14's window choice doesn't hold up.** §14 expected failures at 0.15 s. Instead 0.15 s catches more than 0.10 s in 8
+  of the 9 cells compared and ties the other. At σ_p = 5 mm it does more for A than going to 3 mm: 16 to 55 of 100, against
+  16 to 41. Q3's cell and the window are still to be chosen: `results/approach_a.md` has the grid and a recommendation.
+- **Q5 and Q7 are answered:** the tilt limit stays at 25°, and 1 ms is small enough. See `results/catch_timing.md`.
+- **Q6: single catches only.** This departs from the proposal, so the team should agree to it, and the paper should say so.
 
 ---
 
@@ -812,11 +819,12 @@ the harness are written costs days.
       passes at the 1 N grip threshold but not at 0.1 N (`results/catch_timing.md`)
 - [x] Tracking error through a catch motion measured and written up; driver decision made (§14)
 - [x] Toss variability verified against commanded σ (A4)
-- [ ] `trials.py` runs 100 seeded trials headless and writes `results/approach_a.csv`
-- [ ] Re-running the same seeds reproduces the CSV
-- [ ] Trial record contains `predicted_miss` and `arm_arrival_error` separately
-- [ ] Nominal cell: A ≥ 50% catch and ≥ 90% contact at σ_p = 0, σ_toss = 0 (proposal goal, A6)
-- [ ] Per-trial wall time measured and the Week 4 sweep budget written down
+- [x] `trials.py` runs 100 seeded trials headless and writes `results/approach_a.csv`
+- [x] Re-running the same seeds reproduces the CSV: outcomes exactly, measurements within a tolerance by column
+      (`planning/assumptions.md`)
+- [x] Trial record contains `predicted_miss` and `arm_arrival_error` separately
+- [x] Nominal cell: A ≥ 50% catch and ≥ 90% contact at σ_p = 0, σ_toss = 0 (proposal goal, A6): 100 of 100 for both
+- [x] Per-trial wall time measured and the Week 4 sweep budget written down (`results/approach_a.md`)
 - [x] `planning/assumptions.md` updated: position-only default, the toss at the joint limits with a
       0.575 s flight, the acceleration assumption, the driver decision
 - [ ] Shared layer frozen and handed to Approach B
