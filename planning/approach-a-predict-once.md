@@ -23,8 +23,9 @@ changed a few things below, which are left as written for the record. The eviden
   §14 excludes the sample at release, but `prediction_error()` counts it. A1 is tested on the same 10 samples.
   §14's error budget grows accordingly.
 - **The ball's real tolerances differ from §2's.** Sideways tolerance depends on the close timing, and the
-  timing window is about 22 ms rather than 7 ms, but much of it holds the ball above the pads rather than
-  between them. §13.3 counts that as a catch, which needs a team decision. See `results/catch_timing.md`.
+  timing window is about 22 ms rather than 7 ms, but only 3 ms of that holds the ball between the pads; the rest
+  perches it on their edges. §13.3 counts that as a catch, which needs a team decision, along with what grip force
+  counts as non-zero. See `results/catch_timing.md`.
 - **"Bit-identical" (A4, A5) isn't achievable.** Drake repeats to about 1e-12 m, so compare within a tolerance.
 - **Q2 is answered:** the driver stays `position_only`.
 
@@ -803,7 +804,8 @@ the harness are written costs days.
 - [ ] `CatchController` runs all three policies through one code path; `policy_calls` recorded
 - [x] Baseline catches a nominal, noiseless toss in Meshcat (§11 self-test)
 - [x] `PredictOncePolicy` catches a nominal, noiseless toss
-- [x] Close-trigger lead sweep peaks within 10 ms of the §10 arithmetic (A3)
+- [x] Close-trigger lead sweep peaks within 10 ms of the §10 arithmetic (A3): a plateau rather than a peak, which
+      passes at the 1 N grip threshold but not at 0.1 N (`results/catch_timing.md`)
 - [x] Tracking error through a catch motion measured and written up; driver decision made (§14)
 - [ ] Toss variability verified against commanded σ (A4)
 - [ ] `trials.py` runs 100 seeded trials headless and writes `results/approach_a.csv`

@@ -1,5 +1,6 @@
 """The catch controller, its policies, and the end-to-end self-test (spec section 11)."""
 
+from types import SimpleNamespace
 import unittest
 
 import numpy as np
@@ -253,6 +254,45 @@ class FingersStoppedTest(unittest.TestCase):
 
     def test_never_settling(self):
         self.assertIsNone(catch.first_settled(np.full(50, -1.0)))
+
+
+class HoldTimeTest(unittest.TestCase):
+    BOTH = frozenset({"wsg::left_finger", "wsg::right_finger"})
+
+    def scenario(self, touching=None):
+        """Fingers close from 0.1 s to 0.12 s; the grip force falls from 2 N to 0.5 N at 0.6 s."""
+        t = np.arange(0.0, 1.0, 0.001)
+        rate = np.where((t >= 0.1) & (t < 0.12), -1.0, 0.0)
+        force = np.where(t < 0.6, 2.0, 0.5)
+        log = SimpleNamespace(t=t, finger_rate=rate, grip_force=force,
+                              touching=touching if touching is not None else [self.BOTH] * len(t))
+        return log, SimpleNamespace(t_close=0.07, latency=0.03)
+
+    def test_the_hold_ends_when_the_force_falls_below_the_threshold(self):
+        log, controller = self.scenario()
+        held, t_stop = catch.hold_after_closing(log, controller, grip_force_min=1.0)
+        self.assertAlmostEqual(t_stop, 0.12, delta=0.002)
+        self.assertAlmostEqual(held, 0.6 - t_stop, delta=0.002)
+
+    def test_a_lower_threshold_holds_longer(self):
+        log, controller = self.scenario()
+        held, t_stop = catch.hold_after_closing(log, controller, grip_force_min=0.1)
+        self.assertAlmostEqual(held, 0.999 - t_stop, delta=0.002)
+
+    def test_the_hold_ends_when_a_finger_lets_go(self):
+        log, controller = self.scenario()
+        log.touching = [self.BOTH if t < 0.3 else frozenset({"wsg::left_finger"}) for t in log.t]
+        held, t_stop = catch.hold_after_closing(log, controller, grip_force_min=0.1)
+        self.assertAlmostEqual(held, 0.3 - t_stop, delta=0.002)
+
+    def test_no_contact_is_no_hold(self):
+        log, controller = self.scenario(touching=[frozenset()] * 1000)
+        self.assertEqual(catch.hold_after_closing(log, controller)[0], 0.0)
+
+    def test_fingers_that_never_moved_give_no_hold(self):
+        log, controller = self.scenario()
+        log.finger_rate = np.zeros(len(log.t))
+        self.assertEqual(catch.hold_after_closing(log, controller), (0.0, None))
 
 
 class SelfTest(unittest.TestCase):

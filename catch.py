@@ -73,7 +73,9 @@ SEED_ROOT = 4210
 NOMINAL_TIME_OFFSET = 0.00067  # s
 NOMINAL_OFFSET = np.array([0.01375, -0.00180, 0.0])  # m
 
-# Grip force below this counts as not gripping (N); the force limit is 40 N.
+# Grip force below this counts as not gripping (N).  The spec says only "non-zero",
+# and fingers closed on nothing read under 0.05 N.  This sets the early edge of the
+# catch window, though it barely changes noisy catch rates: results/catch_timing.md.
 GRIP_FORCE_MIN = 1.0
 HOLD_TIME = 0.5  # s the ball must stay gripped to count as caught
 FINGER_STOPPED_SPEED = 0.02  # m/s of finger opening rate
@@ -501,6 +503,26 @@ def first_settled(rate: np.ndarray, rows: int = FINGER_SETTLED_ROWS) -> int | No
     return None
 
 
+def hold_after_closing(log, controller, grip_force_min: float = GRIP_FORCE_MIN) -> tuple[float, float | None]:
+    """How long (s) both fingers keep gripping the ball, from when they stop
+    closing, and the simulation time they stop, or None if they never do."""
+    closing = np.flatnonzero(log.t >= controller.t_close + controller.latency)
+    moved = closing[log.finger_rate[closing] < -FINGER_STOPPED_SPEED]
+    if len(moved) == 0:
+        return 0.0, None
+    settled = first_settled(log.finger_rate[moved[0]:])
+    if settled is None:
+        return 0.0, None
+    i_stop = moved[0] + settled
+    i_end = i_stop
+    while (i_end < len(log.t)
+           and {"wsg::left_finger", "wsg::right_finger"} <= log.touching[i_end]
+           and log.grip_force[i_end] >= grip_force_min):
+        i_end += 1
+    held = log.t[i_end - 1] - log.t[i_stop] if i_end > i_stop else 0.0
+    return held, log.t[i_stop]
+
+
 def score(plan: toss.TossPlan, log: CatchLog, controller: CatchController) -> CatchOutcome:
     """Decide whether the ball was caught, and measure how the catch went."""
     fly = toss.free_flight(plan, log)
@@ -526,26 +548,9 @@ def score(plan: toss.TossPlan, log: CatchLog, controller: CatchController) -> Ca
         outcome.predicted_miss = np.linalg.norm(chosen.p_catch - fly.p_down)
     outcome.arm_arrival_error = np.linalg.norm(_at(chosen.t_catch, log.t, log.pinch) - chosen.p_catch)
 
-    # The hold is timed from when the fingers stop closing, some time after the
-    # command reaches them.
-    if not chosen.solve_ok:
-        return outcome
-    closing = np.flatnonzero(log.t >= controller.t_close + controller.latency)
-    moved = closing[log.finger_rate[closing] < -FINGER_STOPPED_SPEED]
-    if len(moved) == 0:
-        return outcome
-    settled = first_settled(log.finger_rate[moved[0]:])
-    if settled is None:
-        return outcome
-    i_stop = moved[0] + settled
-    outcome.t_fingers_stopped = log.t[i_stop]
-    i_end = i_stop
-    while (i_end < len(log.t)
-           and {"wsg::left_finger", "wsg::right_finger"} <= log.touching[i_end]
-           and log.grip_force[i_end] >= GRIP_FORCE_MIN):
-        i_end += 1
-    outcome.hold_time = log.t[i_end - 1] - log.t[i_stop] if i_end > i_stop else 0.0
-    outcome.caught = outcome.hold_time >= HOLD_TIME
+    if chosen.solve_ok:
+        outcome.hold_time, outcome.t_fingers_stopped = hold_after_closing(log, controller)
+        outcome.caught = outcome.hold_time >= HOLD_TIME
     return outcome
 
 

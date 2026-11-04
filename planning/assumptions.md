@@ -35,7 +35,7 @@ section gets written from. Week 1 §8 listed the provisional values; this record
 | Catch tilt | Gripper within 25° of up | The nominal catch uses 23.8°, so the ball comes in about 36° off the finger axis. Whether a tighter limit is reachable is spec Q5 |
 | Close latency | 30 ms, decision to command | Proposal's "small, fixed delta" |
 | Close timing | Pads aimed 3 ms before the ball, through the gripper's measured response by command phase | Replaces the spec's fixed 25 ms gripper time. The pads can't arrive 20 to 29 ms after a WSG controller update: `results/catch_timing.md` |
-| Catch definition | Both fingers touching the ball and grip force above 1 N, continuously for 0.5 s from when the fingers stop | Spec §13.3. *Open:* **this counts a ball perched on the pads' edges**, which includes the default noiseless catch. Trials record `end_in_hand`, so either definition can be applied later: `results/catch_timing.md` |
+| Catch definition | Both fingers touching the ball and grip force above 1 N, continuously for 0.5 s from when the fingers stop | Spec §13.3. *Open:* **this counts a ball perched on the pads' edges**, which includes the default noiseless catch. Trials record `end_in_hand`, so either definition can be applied later. The spec says only "non-zero" force; 1 N is this code's choice, and it sets the early edge of the timing window: `results/catch_timing.md` |
 
 ## Sensing
 

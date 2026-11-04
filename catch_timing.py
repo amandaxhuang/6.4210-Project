@@ -9,11 +9,12 @@
 4. Tracking (spec section 14).  How far the pinch point is from where the plan
    commands it, through a catch motion.
 5. Timing the close on noisy tosses, to choose how to trigger it.
+6. How much the grip force threshold in the definition of a catch matters.
 
 The sweeps in 2 and 3 run the open-loop baseline on a noiseless toss, so that the
 only error is the one being swept.
 
-    HEADLESS=1 python catch_timing.py [response lead offsets tracking trigger]
+    HEADLESS=1 python catch_timing.py [response lead offsets tracking trigger threshold]
 """
 
 import multiprocessing
@@ -41,6 +42,8 @@ NOISE_LEVELS = [0.002, 0.005]  # m
 FIXED_LEADS = [0.055, 0.060]  # s
 PAD_LEADS = [0.0, 0.003, 0.005, 0.008, 0.012]  # s
 N_TRIALS = 60
+GRIP_THRESHOLDS = [0.05, 0.1, 0.25, 0.5, 1.0]  # N
+THRESHOLD_LEADS = [l / 1000 for l in (56, 62, 68, 71, 72, 73, 75, 78, 80, 83, 85, 87, 88)]  # s
 
 
 class _AimedOff(catch.OpenLoopPolicy):
@@ -164,6 +167,45 @@ def report_offsets(pool):
     return rows
 
 
+def holds_by_threshold(run):
+    return {force: catch.hold_after_closing(run.log, run.controller, force)[0] for force in GRIP_THRESHOLDS}
+
+
+def run_threshold_lead(lead):
+    run = catch.simulate_catch(catch.OpenLoopPolicy, sigma_p=0.0, lead=lead)
+    return dict(lead=lead, holds=holds_by_threshold(run), force=run.log.grip_force[-1],
+                along=run.outcome.end_in_hand[1], height=run.log.ball_p[-1, 2])
+
+
+def run_threshold_trial(args):
+    sigma_p, trial = args
+    run = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=sigma_p, trial=trial)
+    return dict(sigma_p=sigma_p, holds=holds_by_threshold(run), on_pad=abs(run.outcome.end_in_hand[1]) <= 0.01)
+
+
+def report_threshold(pool):
+    print("## 6. Grip force threshold\n")
+    print("The spec's catch needs a non-zero grip force.  Time held (s), by the force counted as non-zero, from "
+          "the same simulations.  A catch needs 0.5 s.  Perfect toss by trigger lead, with the force and the "
+          "ball's position at the end of the run:\n")
+    rows = pool.map(run_threshold_lead, THRESHOLD_LEADS)
+    print("| lead (ms) | " + " | ".join(f"{force} N" for force in GRIP_THRESHOLDS) + " | force at end (N) | ball along fingers (cm) | height (m) |")
+    print("|---|" + "---|" * (len(GRIP_THRESHOLDS) + 3))
+    for r in rows:
+        print(f"| {1e3 * r['lead']:.0f} | " + " | ".join(f"{r['holds'][force]:.2f}" for force in GRIP_THRESHOLDS)
+              + f" | {r['force']:.2f} | {100 * r['along']:+.1f} | {r['height']:.3f} |")
+    print(f"\nApproach A with the default trigger, {N_TRIALS} trials, caught by threshold:\n")
+    trials = pool.map(run_threshold_trial, [(sigma, t) for sigma in NOISE_LEVELS for t in range(N_TRIALS)])
+    print("| sigma_p | " + " | ".join(f"{force} N" for force in GRIP_THRESHOLDS) + " | on pad, at 1 N |")
+    print("|---|" + "---|" * (len(GRIP_THRESHOLDS) + 1))
+    for sigma in NOISE_LEVELS:
+        t = [x for x in trials if x["sigma_p"] == sigma]
+        counts = [sum(x["holds"][force] >= catch.HOLD_TIME for x in t) for force in GRIP_THRESHOLDS]
+        on_pad = sum(x["holds"][1.0] >= catch.HOLD_TIME and x["on_pad"] for x in t)
+        print(f"| {1e3 * sigma:.0f} mm | " + " | ".join(map(str, counts)) + f" | {on_pad} |")
+    print()
+
+
 def report_trigger(pool):
     print("## 5. Timing the close on noisy tosses\n")
     print(f"Approach A, {N_TRIALS} trials per row, the same noise in every row.  'Lookup' aims the pads "
@@ -227,10 +269,11 @@ def report_tracking(pool=None):
 def run(sections):
     with multiprocessing.get_context("spawn").Pool(N_WORKERS, initializer=init_worker) as pool:
         for name, section in (("response", report_response), ("lead", report_lead), ("offsets", report_offsets),
-                              ("tracking", report_tracking), ("trigger", report_trigger)):
+                              ("tracking", report_tracking), ("trigger", report_trigger),
+                              ("threshold", report_threshold)):
             if name in sections:
                 section(pool)
 
 
 if __name__ == "__main__":
-    run(sys.argv[1:] or ["response", "lead", "offsets", "tracking", "trigger"])
+    run(sys.argv[1:] or ["response", "lead", "offsets", "tracking", "trigger", "threshold"])
