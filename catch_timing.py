@@ -13,11 +13,15 @@
 7. Toss noise (spec deliverable A4).  Whether the spread in where and when the
    ball comes down matches the noise asked for.
 8. A first look at catches with toss noise, against what the sensor gains.
+9. Observation window (spec section 14).  Approach A with a longer window.
+10. Gripper tilt (spec Q5).  Whether a tighter limit is reachable, and whether it helps.
+11. Time step (spec Q7).  Whether catches change at half the plant time step.
 
 The sweeps in 2 and 3 run the open-loop baseline on a noiseless toss, so that the
 only error is the one being swept.
 
-    HEADLESS=1 python catch_timing.py [response lead offsets tracking trigger threshold toss_noise first_look]
+    HEADLESS=1 python catch_timing.py [response lead offsets tracking trigger threshold toss_noise first_look
+                                       window tilt time_step]
 """
 
 import multiprocessing
@@ -53,6 +57,11 @@ SPREAD_TOLERANCE = 0.15  # spec deliverable A4
 SIGMA_VZ = 0.02  # m/s; the spec's nominal
 FIRST_LOOK_LATERAL = [0.02, 0.04, 0.08]  # m/s, the first the spec's nominal
 FIRST_LOOK_SENSOR = [0.002, 0.005]  # m
+WINDOWS = [0.10, 0.125, 0.15, 0.165]  # s; the last is spec section 14's hard limit
+TILTS = [15.0, 20.0, 25.0]  # degrees
+TILT_SIGMA_P = 0.002  # m
+TIME_STEPS = [0.001, 0.0005]  # s
+N_TIME_STEP_TRIALS = 30
 
 
 class _AimedOff(catch.OpenLoopPolicy):
@@ -276,6 +285,124 @@ def report_first_look(pool):
     print()
 
 
+def noisy_kwargs(sigma_p, trial):
+    return dict(sigma_p=sigma_p, sigma_lat=FIRST_LOOK_LATERAL[0], sigma_vz=SIGMA_VZ, trial=trial)
+
+
+def run_window(args):
+    t_window, sigma_p, trial = args
+    run = catch.simulate_catch(lambda planner: catch.PredictOncePolicy(planner, t_window), **noisy_kwargs(sigma_p, trial))
+    o, plan = run.outcome, run.plans[-1]
+    return dict(key=(t_window, sigma_p), caught=o.caught, contact=o.contact, solve_ok=plan.solve_ok,
+                rejected=plan.intercept_rejected, on_pad=catch.ball_on_pad(o.end_in_hand),
+                predicted=o.predicted_miss, timing=o.timing_error)
+
+
+def report_window(pool):
+    print("## 9. Observation window\n")
+    print(f"Approach A, {N_TRIALS} trials per row, sigma lateral = {FIRST_LOOK_LATERAL[0]} and sigma vertical = {SIGMA_VZ} m/s, "
+          "by how long it observes before deciding.\n")
+    cells = [(w, sigma) for sigma in FIRST_LOOK_SENSOR for w in WINDOWS]
+    rows = pool.map(run_window, [(*cell, t) for cell in cells for t in range(N_TRIALS)])
+    print("| sigma_p (mm) | window (s) | caught | on pad | contact | no plan | rejected | predicted miss, median (cm) | timing error, 1 sigma (ms) |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    for w, sigma in cells:
+        r = [x for x in rows if x["key"] == (w, sigma)]
+        print(f"| {1e3 * sigma:.0f} | {w} | {sum(x['caught'] for x in r)} | {sum(x['caught'] and x['on_pad'] for x in r)} "
+              f"| {sum(x['contact'] for x in r)} | {sum(not x['solve_ok'] for x in r)} | {sum(x['rejected'] for x in r)} "
+              f"| {100 * np.nanmedian([x['predicted'] for x in r]):.1f} | {1e3 * np.nanstd([x['timing'] for x in r]):.1f} |")
+    print()
+
+
+def tilt_angles(run):
+    """How far the gripper is from up at the catch, and the ball's approach from its finger axis (degrees)."""
+    log, t_catch = run.log, run.plans[-1].t_catch
+    R = log.R_WG[np.searchsorted(log.t, t_catch)]
+    v = log.ball_v[np.searchsorted(log.t, t_catch - 0.02)]
+    return (np.degrees(np.arccos(np.clip(R[2, 1], -1, 1))),
+            np.degrees(np.arccos(np.clip(-v @ R[:, 1] / np.linalg.norm(v), -1, 1))))
+
+
+def run_tilt(args):
+    tilt, sigma_p, trial = args
+    saved = toss.CATCH_TILT
+    toss.CATCH_TILT = tilt
+    try:
+        run = catch.simulate_catch(catch.PredictOncePolicy, **noisy_kwargs(sigma_p, trial)) if sigma_p is not None \
+            else catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.0)
+    finally:
+        toss.CATCH_TILT = saved
+    o, plan = run.outcome, run.plans[-1]
+    angles = tilt_angles(run) if plan.solve_ok else (np.nan, np.nan)
+    return dict(key=(tilt, sigma_p), caught=o.caught, contact=o.contact, solve_ok=plan.solve_ok,
+                on_pad=catch.ball_on_pad(o.end_in_hand), tilt=angles[0], off_axis=angles[1],
+                end=o.end_in_hand[1], arrival=o.arm_arrival_error)
+
+
+def report_tilt(pool):
+    print("## 10. Gripper tilt\n")
+    print(f"How far the gripper may be from up at the catch.  The earliest arrival is by trajectory optimization, from the end "
+          f"of the brake.  Noisy rows are Approach A, {N_TRIALS} trials, sigma_p = {1e3 * TILT_SIGMA_P:.0f} mm, sigma lateral = "
+          f"{FIRST_LOOK_LATERAL[0]} and sigma vertical = {SIGMA_VZ} m/s.\n")
+    kin = catch.shared_kinematics()
+    plan = toss.plan_toss(kin.plant)
+    nominal = catch.nominal_catch(plan)
+    q_stop = plan.q_traj.value(plan.t_release + toss.BRAKE).ravel()
+    a_max = catch.accel_limits(kin)["brake"]
+    quiet = {r["key"][0]: r for r in pool.map(run_tilt, [(tilt, None, 0) for tilt in TILTS])}
+    noisy = pool.map(run_tilt, [(tilt, TILT_SIGMA_P, t) for tilt in TILTS for t in range(N_TRIALS)])
+    print("| tilt limit (deg) | earliest arrival (s) | to spare (s) | noiseless: result | tilt used (deg) | ball off finger axis (deg) | ball ends along fingers (cm) | arrival error (cm) | noisy: caught | on pad | contact | no plan |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    for tilt in TILTS:
+        saved = toss.CATCH_TILT
+        toss.CATCH_TILT = tilt
+        try:
+            T, _ = feasibility.min_time(kin, plan, q_stop, np.zeros(7), toss.BRAKE, nominal.p_catch, a_max)
+        finally:
+            toss.CATCH_TILT = saved
+        q, r = quiet[tilt], [x for x in noisy if x["key"][0] == tilt]
+        print(f"| {tilt:.0f} | {toss.BRAKE + T:.3f} | {nominal.t_catch - toss.BRAKE - T:+.3f} | "
+              f"{'caught' if q['caught'] else ('touched' if q['contact'] else 'missed') if q['solve_ok'] else 'no plan'} | "
+              f"{q['tilt']:.1f} | {q['off_axis']:.1f} | {100 * q['end']:+.1f} | {100 * q['arrival']:.2f} | "
+              f"{sum(x['caught'] for x in r)} | {sum(x['caught'] and x['on_pad'] for x in r)} | {sum(x['contact'] for x in r)} | {sum(not x['solve_ok'] for x in r)} |")
+    print()
+
+
+def run_time_step(args):
+    step, trial = args
+    original = env.make_scenario
+
+    def scenario():
+        result = original()
+        result.plant_config.time_step = step
+        return result
+
+    env.make_scenario = scenario
+    try:
+        run = catch.simulate_catch(catch.PredictOncePolicy, **noisy_kwargs(TILT_SIGMA_P, trial))
+    finally:
+        env.make_scenario = original
+    o = run.outcome
+    return dict(step=step, trial=trial, caught=o.caught, contact=o.contact, end=o.end_in_hand, predicted=o.predicted_miss)
+
+
+def report_time_step(pool):
+    print("## 11. Time step\n")
+    print(f"Approach A, the same {N_TIME_STEP_TRIALS} trials at each plant time step, sigma_p = {1e3 * TILT_SIGMA_P:.0f} mm, "
+          f"sigma lateral = {FIRST_LOOK_LATERAL[0]} and sigma vertical = {SIGMA_VZ} m/s.\n")
+    rows = pool.map(run_time_step, [(step, t) for step in TIME_STEPS for t in range(N_TIME_STEP_TRIALS)])
+    a = {r["trial"]: r for r in rows if r["step"] == TIME_STEPS[0]}
+    b = {r["trial"]: r for r in rows if r["step"] == TIME_STEPS[1]}
+    flips = [t for t in a if a[t]["caught"] != b[t]["caught"]]
+    both = [t for t in a if a[t]["caught"] and b[t]["caught"]]
+    moved = [np.linalg.norm(a[t]["end"] - b[t]["end"]) for t in both]
+    print(f"- Caught at {TIME_STEPS[0]} s: {sum(r['caught'] for r in a.values())}; at {TIME_STEPS[1]} s: {sum(r['caught'] for r in b.values())}")
+    print(f"- Trials whose outcome changed: {len(flips)} of {N_TIME_STEP_TRIALS} (trials {flips})")
+    print(f"- Where the ball ends, for trials caught at both: median {100 * np.median(moved):.2f} cm apart, at most {100 * np.max(moved):.2f} cm")
+    print(f"- Predicted miss, median: {100 * np.median([r['predicted'] for r in a.values()]):.2f} cm against {100 * np.median([r['predicted'] for r in b.values()]):.2f} cm")
+    print()
+
+
 def report_trigger(pool):
     print("## 5. Timing the close on noisy tosses\n")
     print(f"Approach A, {N_TRIALS} trials per row, the same noise in every row.  'Lookup' aims the pads "
@@ -341,10 +468,12 @@ def run(sections):
         for name, section in (("response", report_response), ("lead", report_lead), ("offsets", report_offsets),
                               ("tracking", report_tracking), ("trigger", report_trigger),
                               ("threshold", report_threshold), ("toss_noise", report_toss_noise),
-                              ("first_look", report_first_look)):
+                              ("first_look", report_first_look), ("window", report_window), ("tilt", report_tilt),
+                              ("time_step", report_time_step)):
             if name in sections:
                 section(pool)
 
 
 if __name__ == "__main__":
-    run(sys.argv[1:] or ["response", "lead", "offsets", "tracking", "trigger", "threshold", "toss_noise", "first_look"])
+    run(sys.argv[1:] or ["response", "lead", "offsets", "tracking", "trigger", "threshold", "toss_noise", "first_look",
+                         "window", "tilt", "time_step"])

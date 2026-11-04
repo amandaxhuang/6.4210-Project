@@ -88,6 +88,36 @@ class RunTrialTest(unittest.TestCase):
         self.assertTrue(self.quiet.caught)
 
 
+class WindowTest(unittest.TestCase):
+    def test_approach_a_observes_for_the_window_it_is_given(self):
+        short = trials.run_trial(trials.TrialConfig("predict_once", trial=1, sigma_p=0.0, sigma_lat=0.0, sigma_vz=0.0))
+        long = trials.run_trial(trials.TrialConfig("predict_once", trial=1, sigma_p=0.0, sigma_lat=0.0, sigma_vz=0.0,
+                                                   t_window=0.15))
+        self.assertEqual((short.t_window, short.n_obs), (catch.T_WINDOW, 10))
+        self.assertEqual((long.t_window, long.n_obs), (0.15, 15))
+
+    def test_the_baseline_uses_no_observations(self):
+        run = trials.run_trial(trials.TrialConfig("open_loop", trial=1, sigma_p=0.0, sigma_lat=0.0, sigma_vz=0.0))
+        self.assertEqual(run.n_obs, 0)
+
+    def test_windows_are_separate_cells_paired_with_the_same_baseline(self):
+        baseline = [record(approach="open_loop", sigma_p=0.0, trial=t, caught=False) for t in range(4)]
+        short = [record(trial=t, t_window=0.10, caught=t < 1) for t in range(4)]
+        long = [record(trial=t, t_window=0.15, caught=t < 3) for t in range(4)]
+        cells = {(c.approach, c.t_window): c for c in trials.summarize(baseline + short + long)}
+        self.assertEqual(cells[("predict_once", 0.10)].caught, 1)
+        self.assertEqual(cells[("predict_once", 0.15)].caught, 3)
+        self.assertEqual(cells[("predict_once", 0.15)].only_this, 3)
+
+    def test_the_grid_has_both_windows_and_every_toss_noise_has_a_baseline(self):
+        configs = trials.grid()
+        windows = {c.t_window for c in configs if c.approach == "predict_once"}
+        self.assertEqual(windows, set(trials.GRID_WINDOWS))
+        for sigma_lat in trials.GRID_SIGMA_LAT:
+            self.assertTrue(any(c.approach == "open_loop" and c.sigma_lat == sigma_lat for c in configs))
+        self.assertTrue(any(c.approach == "predict_once" and c.sigma_p == 0 and c.sigma_lat == 0 for c in configs))
+
+
 class SweepTest(unittest.TestCase):
     def test_parallel_trials_match_and_keep_their_order(self):
         configs = [trials.TrialConfig("predict_once", trial=t, sigma_p=0.002) for t in (3, 1)]
@@ -99,7 +129,7 @@ class SweepTest(unittest.TestCase):
 
 
 def record(**fields):
-    defaults = dict(approach="predict_once", trial=0, seed=catch.SEED_ROOT, sigma_p=0.005, sigma_v=0.05,
+    defaults = dict(approach="predict_once", trial=0, seed=catch.SEED_ROOT, t_window=0.10, n_obs=10, sigma_p=0.005, sigma_v=0.05,
                     obs_mode="position_only", sigma_lat=0.02, sigma_vz=0.02, latency=0.03, caught=True,
                     caught_on_pad=False, contact=True, hold_time=1.0, miss_horizontal=0.01, miss_vertical=0.0,
                     miss_closing=0.0, miss_fingers=0.0, miss_across=0.0, end_fingers=0.015, end_across=0.0,

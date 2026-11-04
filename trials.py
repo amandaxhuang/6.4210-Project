@@ -41,7 +41,7 @@ SAME = 1e-9
 WALL_CLOCK_COLUMNS = ("solve_time", "wall_time")
 
 # The grid the nominal cell is chosen from.
-GRID_SIGMA_P = [0.0, 0.002, 0.003, 0.004, 0.005]  # m
+GRID_WINDOWS = {0.10: [0.0, 0.002, 0.003, 0.005], 0.15: [0.002, 0.003, 0.005, 0.007]}  # s: sigma_p in m
 GRID_SIGMA_LAT = [0.02, 0.04, 0.06]  # m/s
 GRID_SIGMA_VZ = 0.02  # m/s
 
@@ -59,6 +59,7 @@ class TrialConfig:
     sigma_vz: float = 0.02
     latency: float = catch.T_LATENCY
     assumed_latency: float | None = None  # what the trigger allows for, if not the latency itself
+    t_window: float = catch.T_WINDOW  # how long Approach A observes before deciding
 
 
 @dataclass
@@ -68,6 +69,8 @@ class TrialResult:
     approach: str
     trial: int
     seed: int
+    t_window: float
+    n_obs: int  # observations behind the plan
     sigma_p: float
     sigma_v: float
     obs_mode: str
@@ -115,16 +118,23 @@ def release_state(run) -> tuple[np.ndarray, np.ndarray]:
     return log.ball_p[i] - v0 * tau - 0.5 * sensing.GRAVITY * tau**2, v0
 
 
+def _policy_factory(config: TrialConfig):
+    if config.approach == "predict_once":
+        return lambda planner: catch.PredictOncePolicy(planner, config.t_window)
+    return catch.POLICIES[config.approach]
+
+
 def run_trial(config: TrialConfig) -> TrialResult:
     start = time.perf_counter()
-    run = catch.simulate_catch(catch.POLICIES[config.approach], sigma_p=config.sigma_p, sigma_v=config.sigma_v,
+    run = catch.simulate_catch(_policy_factory(config), sigma_p=config.sigma_p, sigma_v=config.sigma_v,
                                obs_mode=config.obs_mode, latency=config.latency, assumed_latency=config.assumed_latency,
                                sigma_lat=config.sigma_lat, sigma_vz=config.sigma_vz, trial=config.trial)
     wall_time = time.perf_counter() - start
     o, plan = run.outcome, run.plans[-1]
     p0, v0 = release_state(run)
     return TrialResult(
-        approach=config.approach, trial=config.trial, seed=catch.SEED_ROOT, sigma_p=config.sigma_p,
+        approach=config.approach, trial=config.trial, seed=catch.SEED_ROOT, t_window=config.t_window,
+        n_obs=0 if plan.est is None else plan.est.n_obs, sigma_p=config.sigma_p,
         sigma_v=config.sigma_v, obs_mode=config.obs_mode, sigma_lat=config.sigma_lat, sigma_vz=config.sigma_vz,
         latency=config.latency, assumed_latency=config.assumed_latency, caught=bool(o.caught),
         caught_on_pad=bool(o.caught) and catch.ball_on_pad(o.end_in_hand), contact=bool(o.contact),
@@ -217,6 +227,7 @@ class CellSummary:
     """One cell's results."""
 
     approach: str
+    t_window: float
     sigma_p: float
     sigma_lat: float
     sigma_vz: float
@@ -239,17 +250,17 @@ def summarize(results: list[TrialResult]) -> list[CellSummary]:
     """Summarize each cell, in the order the cells first appear."""
     cells: dict[tuple, list[TrialResult]] = {}
     for r in results:
-        cells.setdefault((r.approach, r.sigma_p, r.sigma_lat, r.sigma_vz, r.latency), []).append(r)
+        cells.setdefault((r.approach, r.t_window, r.sigma_p, r.sigma_lat, r.sigma_vz, r.latency), []).append(r)
     summaries = []
-    for (approach, sigma_p, sigma_lat, sigma_vz, latency), rows in cells.items():
+    for (approach, t_window, sigma_p, sigma_lat, sigma_vz, latency), rows in cells.items():
         planned = [r.arm_arrival_error for r in rows if r.solve_ok]
         summary = CellSummary(
-            approach, sigma_p, sigma_lat, sigma_vz, latency, len(rows), sum(r.caught for r in rows),
+            approach, t_window, sigma_p, sigma_lat, sigma_vz, latency, len(rows), sum(r.caught for r in rows),
             sum(r.caught_on_pad for r in rows), sum(r.contact for r in rows), sum(not r.solve_ok for r in rows),
             sum(r.intercept_rejected for r in rows), float(np.nanmedian([r.predicted_miss for r in rows])),
             float(np.median(planned)) if planned else math.nan, float(np.nanstd([r.timing_error for r in rows])))
         baseline = {r.trial: r.caught for key, group in cells.items()
-                    if key[0] == "open_loop" and key[2:] == (sigma_lat, sigma_vz, latency) for r in group}
+                    if key[0] == "open_loop" and key[3:] == (sigma_lat, sigma_vz, latency) for r in group}
         paired = [r for r in rows if r.trial in baseline]
         if approach != "open_loop" and paired:
             summary.only_this, summary.only_baseline, summary.paired_p = mcnemar(
@@ -272,14 +283,15 @@ def write_report(results: list[TrialResult], path: Path) -> None:
              "Caught is spec section 13.3's definition, with a 95% confidence interval. On pad also needs the ball's "
              "center to end on the 2 cm square pads. 'vs baseline' compares the same tosses: how many only this row "
              "caught, how many only the baseline caught, and McNemar's exact p.", "",
-             "| approach | sigma_p (mm) | sigma lateral (m/s) | sigma vertical (m/s) | caught | on pad | contact | no plan "
-             "| rejected | predicted miss, median (cm) | arm arrival error, median (cm) | timing error, 1 sigma (ms) | vs baseline |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+             "| approach | window (s) | sigma_p (mm) | sigma lateral (m/s) | sigma vertical (m/s) | caught | on pad | contact "
+             "| no plan | rejected | predicted miss, median (cm) | arm arrival error, median (cm) | timing error, 1 sigma (ms) | vs baseline |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for c in summarize(results):
         name = "baseline" if c.approach == "open_loop" else "Approach A"
         sensor = "-" if c.approach == "open_loop" else f"{1e3 * c.sigma_p:.0f}"
+        window = "-" if c.approach == "open_loop" else f"{c.t_window}"
         versus = "-" if c.paired_p is None else f"{c.only_this} / {c.only_baseline}, p = {c.paired_p:.2g}"
-        lines.append(f"| {name} | {sensor} | {c.sigma_lat} | {c.sigma_vz} | {_rate(c.caught, c.n)} | {c.on_pad} | {c.contact} | "
+        lines.append(f"| {name} | {window} | {sensor} | {c.sigma_lat} | {c.sigma_vz} | {_rate(c.caught, c.n)} | {c.on_pad} | {c.contact} | "
                      f"{c.no_plan} | {c.rejected} | {100 * c.predicted_median:.1f} | {100 * c.arrival_median:.2f} | "
                      f"{1e3 * c.timing_sigma:.1f} | {versus} |")
     wall = [r.wall_time for r in results]
@@ -290,17 +302,18 @@ def write_report(results: list[TrialResult], path: Path) -> None:
 
 
 def grid() -> list[TrialConfig]:
-    """The baseline and Approach A across sensor and toss noise, and the noiseless
-    cell the proposal's goal is stated against."""
+    """The baseline, and Approach A across its window, sensor noise and toss noise,
+    and the noiseless cell the proposal's goal is stated against."""
     configs = []
     for approach in ("open_loop", "predict_once"):
         configs += [TrialConfig(approach, trial=t, sigma_p=0.0, sigma_lat=0.0, sigma_vz=0.0) for t in range(N_TRIALS)]
     for sigma_lat in GRID_SIGMA_LAT:
         configs += [TrialConfig("open_loop", trial=t, sigma_p=0.0, sigma_lat=sigma_lat, sigma_vz=GRID_SIGMA_VZ)
                     for t in range(N_TRIALS)]
-        for sigma_p in GRID_SIGMA_P:
-            configs += [TrialConfig("predict_once", trial=t, sigma_p=sigma_p, sigma_lat=sigma_lat, sigma_vz=GRID_SIGMA_VZ)
-                        for t in range(N_TRIALS)]
+        for t_window, sigmas in GRID_WINDOWS.items():
+            configs += [TrialConfig("predict_once", trial=t, sigma_p=sigma_p, sigma_lat=sigma_lat, sigma_vz=GRID_SIGMA_VZ,
+                                    t_window=t_window)
+                        for sigma_p in sigmas for t in range(N_TRIALS)]
     return configs
 
 
