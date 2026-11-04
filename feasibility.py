@@ -49,6 +49,7 @@ from pydrake.all import (
 
 import environment as env
 from planning_core import Kinematics, accel_limits, plan_reach
+from sensing import OBS_RATE, SIGMA_P, SIGMA_V  # the prediction-error column's observation model
 import toss
 
 BISECT_STEPS = 11  # minimum-time search resolution: 1 s / 2^11, about 0.5 ms
@@ -65,10 +66,6 @@ ENVELOPE_ANGLES = [toss.TOSS_ANGLE]
 CUTOFFS = [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55]  # s after release
 DIRECTIONS = {"+x": [1, 0, 0], "-x": [-1, 0, 0], "+y": [0, 1, 0], "-y": [0, -1, 0]}
 
-# Observation model for the prediction-error column (week 1 spec, section 8).
-OBS_RATE = 100.0  # Hz
-SIGMA_P = 0.005  # m, per axis
-SIGMA_V = 0.05  # m/s, per axis
 
 
 # ---------------------------------------------------------------------------
@@ -188,14 +185,17 @@ def saturated_joints(kin, motion) -> str:
     return ", ".join(str(j + 1) for j in hit) or "none"
 
 
-def prediction_error(t_cutoff: float, t_catch: float, with_velocity: bool) -> float:
+def prediction_error(t_cutoff: float, t_catch: float, with_velocity: bool, t_first: float = 0.0) -> float:
     """Expected (1 sigma) error, along one horizontal axis, of the catch point
-    predicted by least squares from observations at OBS_RATE up to t_cutoff.
+    predicted by least squares from observations at OBS_RATE from t_first to
+    t_cutoff.
 
     Horizontal motion is p0 + v0 t, so the fit is linear in (p0, v0).  With
-    with_velocity, each observation also has a velocity reading.
+    with_velocity, each observation also has a velocity reading.  The report's
+    default t_first = 0 counts the sample at release, when the ball is still in
+    the fingers; the catch controller's fit starts at t_first = 0.01.
     """
-    times = np.arange(0.0, t_cutoff + 1e-9, 1 / OBS_RATE)
+    times = np.arange(t_first, t_cutoff + 1e-9, 1 / OBS_RATE)
     rows = [np.array([1.0, ti]) / SIGMA_P for ti in times]
     if with_velocity:
         rows += [np.array([0.0, 1.0]) / SIGMA_V for _ in times]
