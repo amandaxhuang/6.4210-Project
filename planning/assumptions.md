@@ -23,7 +23,7 @@ section gets written from. Week 1 §8 listed the provisional values; this record
 | Speed, direction | 2.72 m/s, 76.5° up, heading −123.74° | `results/catch_feasibility.md` |
 | Flight to the catch plane | 0.575 s, inside the proposal's 0.5–0.65 s | Same |
 | Joint speeds | Commanded at 0.986 × limit, measured peak 0.999 × limit | The toss runs at the arm's limit, so it has no headroom for a faster throw or for noise on the commanded velocity |
-| Toss noise | *open:* perturb the ball after release, or toss slower | Spec §12, §17 Q8. Left for the team. Nothing so far uses toss noise |
+| Toss noise | Added to the ball's velocity 8 ms after release, per trial: σ on each horizontal axis and on vertical | Spec §17 Q8. The commanded release can't take noise because the toss is at the joint limits. **State in the paper that the simulator adds it.** With the limits relaxed, the arm delivered commanded noise within 3% (8 tosses each at σ = 0.02 and 0.04 m/s), so the ball ends up with nearly the same velocity either way. The arm's own motion is the same every trial, a small difference whose effect isn't measured |
 
 ## The catch
 

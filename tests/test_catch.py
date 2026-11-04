@@ -256,6 +256,102 @@ class FingersStoppedTest(unittest.TestCase):
         self.assertIsNone(catch.first_settled(np.full(50, -1.0)))
 
 
+class TossNoiseDrawTest(unittest.TestCase):
+    def test_no_sigma_means_no_noise(self):
+        np.testing.assert_array_equal(catch.toss_velocity_noise(3, 0.0, 0.0), np.zeros(3))
+
+    def test_the_noise_depends_only_on_the_trial(self):
+        np.testing.assert_array_equal(catch.toss_velocity_noise(3, 0.02, 0.02), catch.toss_velocity_noise(3, 0.02, 0.02))
+        self.assertFalse(np.array_equal(catch.toss_velocity_noise(3, 0.02, 0.02), catch.toss_velocity_noise(4, 0.02, 0.02)))
+
+    def test_lateral_and_vertical_are_separate(self):
+        lateral = catch.toss_velocity_noise(3, 0.02, 0.0)
+        vertical = catch.toss_velocity_noise(3, 0.0, 0.02)
+        self.assertEqual(lateral[2], 0.0)
+        np.testing.assert_array_equal(vertical[:2], np.zeros(2))
+        self.assertNotEqual(vertical[2], 0.0)
+
+    def test_a_larger_sigma_scales_the_same_draw(self):
+        np.testing.assert_allclose(catch.toss_velocity_noise(3, 0.04, 0.08), 2 * catch.toss_velocity_noise(3, 0.02, 0.04))
+
+    def test_the_toss_and_observation_streams_are_independent(self):
+        """Trial n uses its own stream for each, as spec section 13.2 asks."""
+        expected = np.random.default_rng([catch.SEED_ROOT, 3, 0]).normal(size=3)
+        np.testing.assert_allclose(catch.toss_velocity_noise(3, 1.0, 1.0), expected)
+
+
+class TossNoiseTest(unittest.TestCase):
+    """A perfect sensor, so that the toss noise is the only error."""
+
+    TRIAL = 5
+
+    @classmethod
+    def setUpClass(cls):
+        noise = dict(sigma_lat=0.02, sigma_vz=0.02, trial=cls.TRIAL)
+        cls.quiet = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.0, trial=cls.TRIAL)
+        cls.a = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.0, **noise)
+        cls.baseline = catch.simulate_catch(catch.OpenLoopPolicy, sigma_p=0.0, **noise)
+        cls.noise = catch.toss_velocity_noise(cls.TRIAL, 0.02, 0.02)
+        cls.t_noise = cls.a.toss_plan.t_release + catch.T_TOSS_NOISE
+
+    def row(self, run, t):
+        return np.searchsorted(run.log.t, t)
+
+    def test_the_run_records_the_noise(self):
+        np.testing.assert_array_equal(self.a.toss_noise, self.noise)
+        np.testing.assert_array_equal(self.quiet.toss_noise, np.zeros(3))
+
+    def test_nothing_changes_before_the_noise_goes_in(self):
+        n = self.row(self.a, self.t_noise)
+        np.testing.assert_allclose(self.a.log.ball_p[:n], self.quiet.log.ball_p[:n], atol=SAME)
+        np.testing.assert_allclose(self.a.log.arm_q[:n], self.quiet.log.arm_q[:n], atol=SAME)
+
+    def test_the_ball_is_free_when_the_noise_goes_in(self):
+        self.assertEqual(self.a.log.touching[self.row(self.a, self.t_noise)], frozenset())
+
+    def test_the_noise_goes_in_before_the_first_observation(self):
+        self.assertLess(catch.T_TOSS_NOISE, 1 / sensing.OBS_RATE)
+
+    def test_the_ball_velocity_changes_by_exactly_the_noise(self):
+        t = self.t_noise + 0.005
+        difference = self.a.log.ball_v[self.row(self.a, t)] - self.quiet.log.ball_v[self.row(self.quiet, t)]
+        np.testing.assert_allclose(difference, self.noise, atol=1e-6)
+
+    def test_a_perfect_fit_predicts_the_perturbed_flight(self):
+        fly = toss.free_flight(self.a.toss_plan, self.a.log)
+        plan = self.a.plans[0]
+        self.assertLess(abs(plan.t_catch - fly.t_down), 0.002)
+        self.assertLess(np.linalg.norm(plan.p_catch - fly.p_down), 0.002)
+
+    def test_the_baseline_ignores_it_and_aims_where_it_did(self):
+        nominal = catch.CatchPlanner(catch.shared_kinematics(), self.baseline.toss_plan).nominal
+        np.testing.assert_array_equal(self.baseline.plans[0].p_catch, nominal.p_catch)
+        fly = toss.free_flight(self.baseline.toss_plan, self.baseline.log)
+        self.assertAlmostEqual(self.baseline.outcome.predicted_miss, np.linalg.norm(nominal.p_catch - fly.p_down))
+
+    def test_a_trial_gets_the_same_toss_under_every_policy(self):
+        t = self.t_noise + 0.09  # up to the decision, before either policy has moved the arm
+        n = self.row(self.a, t)
+        np.testing.assert_allclose(self.a.log.ball_p[:n], self.baseline.log.ball_p[:n], atol=SAME)
+
+    def test_without_noise_different_trials_are_the_same(self):
+        """Spec deliverable A4, within the tolerance Drake repeats to."""
+        a = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.0, trial=1)
+        b = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.0, trial=2)
+        np.testing.assert_allclose(a.log.ball_p, b.log.ball_p, atol=SAME)
+        np.testing.assert_allclose(a.log.arm_q, b.log.arm_q, atol=SAME)
+
+    def test_toss_noise_leaves_the_observation_noise_alone(self):
+        def sensor_noise(run):
+            return np.array([o.p - catch._at(o.t, run.log.t, run.log.ball_p)
+                             for o in run.controller.fit.observations[:10]])
+
+        quiet = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.005, trial=self.TRIAL)
+        noisy = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.005, sigma_lat=0.02, sigma_vz=0.02,
+                                     trial=self.TRIAL)
+        np.testing.assert_allclose(sensor_noise(quiet), sensor_noise(noisy), atol=1e-6)
+
+
 class HoldTimeTest(unittest.TestCase):
     BOTH = frozenset({"wsg::left_finger", "wsg::right_finger"})
 

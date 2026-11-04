@@ -13,7 +13,7 @@
 decision: how toss noise is applied (§12), the nominal σ_p (§14), and gripper timing, which is now
 tighter than the pad height (§10).
 
-**Implementation notes, 2026-11-04.** Steps 1 to 6 of §16 are built on branch `approach-a`. Measuring them
+**Implementation notes, 2026-11-04.** Steps 1 to 7 of §16 are built on branch `approach-a`. Measuring them
 changed a few things below, which are left as written for the record. The evidence is in
 `results/catch_timing.md` and `planning/assumptions.md`.
 
@@ -28,6 +28,10 @@ changed a few things below, which are left as written for the record. The eviden
   counts as non-zero. See `results/catch_timing.md`.
 - **"Bit-identical" (A4, A5) isn't achievable.** Drake repeats to about 1e-12 m, so compare within a tolerance.
 - **Q2 is answered:** the driver stays `position_only`.
+- **Q8 is answered:** toss noise goes onto the ball's velocity 8 ms after release, so §12's discards and
+  `toss_infeasible` don't arise. A4 passes.
+- **At the nominal cell of §13.4, the baseline beats A**, because the one-shot fit's error exceeds the toss noise. This
+  bears on Q3. σ_lat = 0.08 m/s doesn't defeat the arm as §12 expected. See `results/catch_timing.md`.
 
 ---
 
@@ -807,7 +811,7 @@ the harness are written costs days.
 - [x] Close-trigger lead sweep peaks within 10 ms of the §10 arithmetic (A3): a plateau rather than a peak, which
       passes at the 1 N grip threshold but not at 0.1 N (`results/catch_timing.md`)
 - [x] Tracking error through a catch motion measured and written up; driver decision made (§14)
-- [ ] Toss variability verified against commanded σ (A4)
+- [x] Toss variability verified against commanded σ (A4)
 - [ ] `trials.py` runs 100 seeded trials headless and writes `results/approach_a.csv`
 - [ ] Re-running the same seeds reproduces the CSV
 - [ ] Trial record contains `predicted_miss` and `arm_arrival_error` separately

@@ -30,6 +30,7 @@ from pydrake.all import (
     LeafSystem,
     PiecewisePolynomial,
     Simulator,
+    SpatialVelocity,
 )
 
 import environment as env
@@ -65,6 +66,12 @@ CONTROL_PERIOD = 0.005
 CONTROL_OFFSET = 0.001
 
 SEED_ROOT = 4210
+
+# Toss noise goes straight onto the ball's velocity this long after release (s).  The
+# ball has left the fingers by about 6 ms and the first observation is at 10 ms, so
+# the fit only ever sees the perturbed flight.  It can't go on the commanded release,
+# as the toss is already at the arm's joint speed limits.  Spec section 12.
+T_TOSS_NOISE = 0.008
 
 # The simulated toss comes down a repeatable distance from the planned one (the
 # ball leaves slower toward -x than planned).  The baseline is allowed to know
@@ -103,6 +110,14 @@ def measure_nominal_offset() -> tuple[float, np.ndarray]:
     fly = toss.free_flight(plan, log)
     t, p = toss.catch_point(plan)
     return fly.t_down - plan.t_release - t, fly.p_down - p
+
+
+def toss_velocity_noise(trial: int, sigma_lat: float, sigma_vz: float) -> np.ndarray:
+    """What this trial's toss adds to the ball's velocity (m/s, world frame).  It
+    depends only on the trial, so a trial is the same toss under every policy, and
+    a larger sigma scales the same draw."""
+    draw = np.random.default_rng([SEED_ROOT, trial, 0]).normal(size=3)
+    return draw * np.array([sigma_lat, sigma_lat, sigma_vz])
 
 
 def intercept(est: Estimate, z_catch: float, t_rel: float) -> tuple[float, np.ndarray] | None:
@@ -396,6 +411,7 @@ class CatchRun:
     controller: CatchController
     plant: object
     outcome: CatchOutcome
+    toss_noise: np.ndarray  # what was added to the ball's velocity
 
     @property
     def plans(self) -> list[CatchPlan]:
@@ -432,11 +448,12 @@ def build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode, late
 
 def simulate_catch(policy_factory, *, sigma_p=sensing.SIGMA_P, sigma_v=sensing.SIGMA_V,
                    obs_mode=sensing.POSITION_ONLY, latency=T_LATENCY, lead=None,
-                   compute_latency=0.0, pad_lead=PAD_LEAD, trial=0) -> CatchRun:
+                   compute_latency=0.0, pad_lead=PAD_LEAD, sigma_lat=0.0, sigma_vz=0.0, trial=0) -> CatchRun:
     """Simulate one toss and catch.  policy_factory takes a CatchPlanner and
-    returns a policy, so a policy class will do.  The observation noise depends
-    only on the trial number, so a trial sees the same noise under every policy."""
+    returns a policy, so a policy class will do.  The toss and observation noise
+    depend only on the trial number, so a trial is the same under every policy."""
     rng_obs = np.random.default_rng([SEED_ROOT, trial, 1])
+    noise = toss_velocity_noise(trial, sigma_lat, sigma_vz)
     system, plan, controller = build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode,
                                                   latency, lead, compute_latency, pad_lead)
     toss.draw_planned_flight(plan)
@@ -476,6 +493,11 @@ def simulate_catch(policy_factory, *, sigma_p=sensing.SIGMA_P, sigma_v=sensing.S
     if not HEADLESS:
         simulator.set_target_realtime_rate(1.0)
     start_recording()
+    simulator.AdvanceTo(plan.t_release + T_TOSS_NOISE)
+    plant_context = plant.GetMyMutableContextFromRoot(context)
+    V_WB = plant.EvalBodySpatialVelocityInWorld(plant_context, ball)
+    plant.SetFreeBodySpatialVelocity(plant_context, ball,
+                                     SpatialVelocity(V_WB.rotational(), V_WB.translational() + noise))
     simulator.AdvanceTo(plan.q_traj.end_time())
     publish_recording()
 
@@ -483,7 +505,7 @@ def simulate_catch(policy_factory, *, sigma_p=sensing.SIGMA_P, sigma_v=sensing.S
     log = CatchLog(np.array(t), np.array(ball_p), np.array(ball_v), list(touching), np.array(pinch),
                    np.array(arm_q), np.array(arm_v), np.array(arm_effort), np.array(q_cmd), np.array(width),
                    np.array(rate), np.array(grip), np.array(R_WG))
-    return CatchRun(plan, log, controller, plant, score(plan, log, controller))
+    return CatchRun(plan, log, controller, plant, score(plan, log, controller), noise)
 
 
 def _at(t, times, values):
@@ -558,7 +580,8 @@ def report(run: CatchRun) -> None:
     """Print one trial's record."""
     o, plans = run.outcome, run.plans
     print(f"caught: {o.caught}   contact: {o.contact}   held {o.hold_time:.3f} s")
-    print(f"policy calls {run.controller.policy_calls}, plans adopted {run.controller.plans_adopted}")
+    print(f"policy calls {run.controller.policy_calls}, plans adopted {run.controller.plans_adopted}; "
+          f"toss noise {np.round(run.toss_noise, 4)} m/s")
     if plans:
         plan = plans[-1]
         t_release = run.toss_plan.t_release

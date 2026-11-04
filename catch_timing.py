@@ -10,11 +10,14 @@
    commands it, through a catch motion.
 5. Timing the close on noisy tosses, to choose how to trigger it.
 6. How much the grip force threshold in the definition of a catch matters.
+7. Toss noise (spec deliverable A4).  Whether the spread in where and when the
+   ball comes down matches the noise asked for.
+8. A first look at catches with toss noise, against what the sensor gains.
 
 The sweeps in 2 and 3 run the open-loop baseline on a noiseless toss, so that the
 only error is the one being swept.
 
-    HEADLESS=1 python catch_timing.py [response lead offsets tracking trigger threshold]
+    HEADLESS=1 python catch_timing.py [response lead offsets tracking trigger threshold toss_noise first_look]
 """
 
 import multiprocessing
@@ -44,6 +47,12 @@ PAD_LEADS = [0.0, 0.003, 0.005, 0.008, 0.012]  # s
 N_TRIALS = 60
 GRIP_THRESHOLDS = [0.05, 0.1, 0.25, 0.5, 1.0]  # N
 THRESHOLD_LEADS = [l / 1000 for l in (56, 62, 68, 71, 72, 73, 75, 78, 80, 83, 85, 87, 88)]  # s
+TOSS_NOISE_CELLS = [(0.01, 0.0), (0.02, 0.0), (0.04, 0.0), (0.0, 0.02), (0.0, 0.05), (0.02, 0.02)]  # m/s: lateral, vertical
+N_TOSSES = 100
+SPREAD_TOLERANCE = 0.15  # spec deliverable A4
+SIGMA_VZ = 0.02  # m/s; the spec's nominal
+FIRST_LOOK_LATERAL = [0.02, 0.04, 0.08]  # m/s, the first the spec's nominal
+FIRST_LOOK_SENSOR = [0.002, 0.005]  # m
 
 
 class _AimedOff(catch.OpenLoopPolicy):
@@ -206,6 +215,67 @@ def report_threshold(pool):
     print()
 
 
+def run_toss_noise(args):
+    sigma_lat, sigma_vz, trial = args
+    run = catch.simulate_catch(catch.OpenLoopPolicy, sigma_p=0.0, sigma_lat=sigma_lat, sigma_vz=sigma_vz, trial=trial)
+    fly = toss.free_flight(run.toss_plan, run.log)
+    return dict(cell=(sigma_lat, sigma_vz), p=fly.p_down, t=fly.t_down - run.toss_plan.t_release,
+                t_nominal=toss.catch_point(run.toss_plan)[0], v=run.toss_plan.v_release)
+
+
+def report_toss_noise(pool):
+    print("## 7. Toss noise\n")
+    print(f"{N_TOSSES} tosses per row.  Spread is 1 sigma in where the ball crosses the catch plane, and when.  The "
+          "prediction is from ballistics: noise acts for the flight after it goes in, a vertical change moves the "
+          "arrival time, and that moves the landing point along the ball's horizontal velocity.\n")
+    jobs = [(lat, vz, trial) for lat, vz in TOSS_NOISE_CELLS for trial in range(N_TOSSES)]
+    rows = pool.map(run_toss_noise, jobs)
+    print("| sigma lateral (m/s) | sigma vertical (m/s) | x spread (cm) | predicted | y spread (cm) | predicted | arrival spread (ms) | predicted | worst ratio to predicted |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    for lat, vz in TOSS_NOISE_CELLS:
+        r = [x for x in rows if x["cell"] == (lat, vz)]
+        p, t = np.array([x["p"] for x in r]), np.array([x["t"] for x in r])
+        v, t_nominal = r[0]["v"], r[0]["t_nominal"]
+        flight = t_nominal - catch.T_TOSS_NOISE
+        descent = np.sqrt(v[2] ** 2 + 2 * toss.G_ACCEL * toss.CATCH_DROP)
+        predicted_t = vz * flight / descent
+        predicted_xy = np.sqrt((lat * flight) ** 2 + (v[:2] * predicted_t) ** 2)
+        spread = np.array([p[:, 0].std(ddof=1), p[:, 1].std(ddof=1), t.std(ddof=1)])
+        predicted = np.array([predicted_xy[0], predicted_xy[1], predicted_t])
+        used = predicted > 0
+        worst = np.abs(spread[used] / predicted[used] - 1).max()
+        print(f"| {lat} | {vz} | {100 * spread[0]:.2f} | {100 * predicted[0]:.2f} | {100 * spread[1]:.2f} | {100 * predicted[1]:.2f} "
+              f"| {1e3 * spread[2]:.2f} | {1e3 * predicted[2]:.2f} | {100 * worst:.0f}% {'ok' if worst <= SPREAD_TOLERANCE else 'OVER'} |")
+    print()
+
+
+def run_first_look(args):
+    policy, sigma_p, sigma_lat, trial = args
+    run = catch.simulate_catch(catch.POLICIES[policy], sigma_p=sigma_p, sigma_lat=sigma_lat, sigma_vz=SIGMA_VZ, trial=trial)
+    o, plan = run.outcome, run.plans[-1]
+    return dict(key=(policy, sigma_p, sigma_lat), caught=o.caught, contact=o.contact, solve_ok=plan.solve_ok,
+                on_pad=abs(o.end_in_hand[1]) <= 0.01, predicted=o.predicted_miss, arrival=o.arm_arrival_error)
+
+
+def report_first_look(pool):
+    print("## 8. A first look at catches with toss noise\n")
+    print(f"{N_TRIALS} trials per row with sigma vertical = {SIGMA_VZ} m/s, the same tosses in every row at each lateral "
+          "sigma.  A perfect sensor (sigma_p = 0) shows what Approach A gains over the baseline from seeing at all.\n")
+    cells = [(name, 0.0, lat) for lat in FIRST_LOOK_LATERAL for name in ("open_loop", "predict_once")]
+    cells += [("predict_once", sigma, FIRST_LOOK_LATERAL[0]) for sigma in FIRST_LOOK_SENSOR]
+    rows = pool.map(run_first_look, [(*cell, trial) for cell in cells for trial in range(N_TRIALS)])
+    print("| sigma lateral (m/s) | policy | sigma_p (mm) | caught | on pad | contact | no plan | predicted miss, median (cm) | arm arrival error, median (cm) |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    for name, sigma, lat in cells:
+        r = [x for x in rows if x["key"] == (name, sigma, lat)]
+        arrival = [x["arrival"] for x in r if x["solve_ok"]]
+        label = "baseline" if name == "open_loop" else "Approach A"
+        print(f"| {lat} | {label} | {'-' if name == 'open_loop' else f'{1e3 * sigma:.0f}'} | {sum(x['caught'] for x in r)} "
+              f"| {sum(x['caught'] and x['on_pad'] for x in r)} | {sum(x['contact'] for x in r)} | {sum(not x['solve_ok'] for x in r)} "
+              f"| {100 * np.median([x['predicted'] for x in r]):.1f} | {100 * np.median(arrival):.2f} |")
+    print()
+
+
 def report_trigger(pool):
     print("## 5. Timing the close on noisy tosses\n")
     print(f"Approach A, {N_TRIALS} trials per row, the same noise in every row.  'Lookup' aims the pads "
@@ -270,10 +340,11 @@ def run(sections):
     with multiprocessing.get_context("spawn").Pool(N_WORKERS, initializer=init_worker) as pool:
         for name, section in (("response", report_response), ("lead", report_lead), ("offsets", report_offsets),
                               ("tracking", report_tracking), ("trigger", report_trigger),
-                              ("threshold", report_threshold)):
+                              ("threshold", report_threshold), ("toss_noise", report_toss_noise),
+                              ("first_look", report_first_look)):
             if name in sections:
                 section(pool)
 
 
 if __name__ == "__main__":
-    run(sys.argv[1:] or ["response", "lead", "offsets", "tracking", "trigger", "threshold"])
+    run(sys.argv[1:] or ["response", "lead", "offsets", "tracking", "trigger", "threshold", "toss_noise", "first_look"])

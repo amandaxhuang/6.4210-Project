@@ -17,7 +17,8 @@ apply here too.
 accuracy table counts the sample at release, which the fit excludes, so A's figure at 0.10 s is 2.87 cm rather than
 2.5 cm, and B's early figures are similarly optimistic. B3's "identical" has to mean within a tolerance, because
 Drake repeats to about 1e-12 m rather than bit for bit. A policy gets the commanded state as the spec says, and
-`CatchController` already takes `compute_latency`.
+`CatchController` already takes `compute_latency`. Toss noise is `simulate_catch(sigma_lat=, sigma_vz=)`. §12's predicted
+collapse at σ_lat = 0.08 m/s may need a larger level: with a perfect sensor Approach A still catches 51 of 60 there.
 
 ---
 
