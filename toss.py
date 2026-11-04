@@ -208,13 +208,11 @@ def plan_toss(plant, v_release: np.ndarray | None = None) -> TossPlan:
     return TossPlan(q_traj, wsg_traj, q_start, t_release, p_release, np.array(v_release), u)
 
 
-def build_toss_system(plan_fn=plan_toss):
-    """The scene with the arm and fingers following a planned toss.
-
-    Returns (diagram, plan).  The station is built first so the plan can use
-    its plant; the trajectory sources are then wired to its command inputs.
+def add_toss_station(builder, plan_fn=plan_toss):
+    """Add the scene to builder, ready for a toss, with its command inputs left
+    unconnected.  Returns (station, plan).  The station is built first so the
+    plan can use its plant.
     """
-    builder = DiagramBuilder()
     station = builder.AddSystem(
         MakeHardwareStation(env.make_scenario(), meshcat=get_meshcat())
     )
@@ -224,8 +222,16 @@ def build_toss_system(plan_fn=plan_toss):
     # Fingers start touching the ball, as in environment.build_system.
     wsg = plant.GetModelInstanceByName("wsg")
     plant.SetDefaultPositions(wsg, [-env.FINGER_CONTACT / 2, env.FINGER_CONTACT / 2])
+    return station, plan_fn(plant)
 
-    plan = plan_fn(plant)
+
+def build_toss_system(plan_fn=plan_toss):
+    """The scene with the arm and fingers following a planned toss.
+
+    Returns (diagram, plan).
+    """
+    builder = DiagramBuilder()
+    station, plan = add_toss_station(builder, plan_fn)
     arm = builder.AddSystem(TrajectorySource(plan.q_traj))
     builder.Connect(arm.get_output_port(), station.GetInputPort("iiwa.position"))
     fingers = builder.AddSystem(TrajectorySource(plan.wsg_traj))

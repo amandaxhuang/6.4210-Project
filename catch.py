@@ -1,0 +1,540 @@
+"""Catching the ball: one controller, with one decision left to a policy.
+
+CatchController does everything the approaches share.  It follows the toss,
+feeds the sensor's observations to the fit, follows the catch plan, and drives
+the fingers.  A policy decides only which CatchPlan to follow and when, so a
+difference between approaches can only come from the policy:
+
+    OpenLoopPolicy     the reference baseline: no observations, one plan to where
+                       the nominal toss comes down
+    PredictOncePolicy  Approach A: one plan from a fit over an early window
+
+The timeline, in seconds after release: the brake ends at 0.100, the decision
+comes on the first control tick after it, the close command goes out at about
+0.52, and the ball crosses the catch plane at about 0.575.
+
+    HEADLESS=1 python catch.py [open_loop | predict_once]
+"""
+
+from dataclasses import dataclass, field
+from functools import lru_cache
+import sys
+import time
+from typing import Protocol
+
+import numpy as np
+from pydrake.all import (
+    AbstractValue,
+    DiagramBuilder,
+    EventStatus,
+    LeafSystem,
+    PiecewisePolynomial,
+    Simulator,
+)
+
+import environment as env
+from planning_core import Kinematics, Motion, accel_limits, plan_reach
+import sensing
+from sensing import BallisticFit, BallSensor, Estimate, Observation
+import toss
+from utils.viz import HEADLESS, keep_meshcat_open, publish_recording, start_recording
+
+T_WINDOW = 0.10  # s after release; how long Approach A observes before deciding
+T_MIN_MOTION = 0.41  # s; the fastest the arm reaches the catch from rest (results/catch_feasibility.md)
+T_MAX_CATCH = 1.0  # s after release; an intercept later than this is not believed
+DECISION_DEADLINE = 0.165  # s after release; past this no motion from rest can arrive in time
+
+T_GRIPPER = 0.025  # s from the close command reaching the fingers to the pads at ball width
+T_LATENCY = 0.030  # s from deciding to close to the command reaching the fingers
+
+# The controller runs at 200 Hz, one plant step after each multiple of 5 ms.
+# Everything that happens at one instant sees the state from before that instant,
+# so a controller on the sensor's own ticks would see each sample a tick late.
+CONTROL_PERIOD = 0.005
+CONTROL_OFFSET = 0.001
+
+SEED_ROOT = 4210
+
+# The simulated toss comes down a repeatable distance from the planned one (the
+# ball leaves slower toward -x than planned).  The baseline is allowed to know
+# this: it stands in for a catcher that has seen the nominal toss before.  If the
+# toss changes, re-measure with measure_nominal_offset().
+NOMINAL_TIME_OFFSET = 0.00067  # s
+NOMINAL_OFFSET = np.array([0.01375, -0.00180, 0.0])  # m
+
+# Grip force below this counts as not gripping (N); the force limit is 40 N.
+GRIP_FORCE_MIN = 1.0
+HOLD_TIME = 0.5  # s the ball must stay gripped to count as caught
+FINGER_STOPPED_SPEED = 0.02  # m/s of finger opening rate
+FINGER_SETTLED_ROWS = 10  # simulator steps it must stay below that, to count as stopped
+
+
+@dataclass(frozen=True)
+class Nominal:
+    """Where the nominal toss comes down."""
+
+    t_catch: float  # s after release
+    p_catch: np.ndarray
+
+
+def nominal_catch(plan: toss.TossPlan) -> Nominal:
+    """Where this toss comes down in simulation, from the plan alone."""
+    t, p = toss.catch_point(plan)
+    return Nominal(t + NOMINAL_TIME_OFFSET, p + NOMINAL_OFFSET)
+
+
+def measure_nominal_offset() -> tuple[float, np.ndarray]:
+    """Simulate a toss with no catch and measure how far its crossing of the
+    catch plane is from the planned one.  Returns (time offset, position offset)."""
+    plan, log, _ = toss.simulate()
+    fly = toss.free_flight(plan, log)
+    t, p = toss.catch_point(plan)
+    return fly.t_down - plan.t_release - t, fly.p_down - p
+
+
+def intercept(est: Estimate, z_catch: float, t_rel: float) -> tuple[float, np.ndarray] | None:
+    """When (s after release) and where the fitted flight comes down through
+    z_catch, or None if it never does, or does so too soon to reach or
+    implausibly late.  Unreachable targets inside those times are left for the
+    planner to fail on: that is a result, not something to hide here."""
+    if est.v0[2] ** 2 - 2 * toss.G_ACCEL * (z_catch - est.p0[2]) < 0:
+        return None
+    t = toss.time_to_height(est.p0, est.v0, z_catch)
+    if not t_rel + T_MIN_MOTION <= t <= T_MAX_CATCH:
+        return None
+    return t, toss.ballistic_position(est.p0, est.v0, t)
+
+
+def close_command_time(t_catch: float, lead: float | None = None) -> float:
+    """When to decide to close so the pads reach the ball at t_catch.  Both times
+    are simulation times.  lead defaults to T_GRIPPER + T_LATENCY."""
+    return t_catch - (T_GRIPPER + T_LATENCY if lead is None else lead)
+
+
+def motion_to_trajectory(motion: Motion, t_release: float) -> PiecewisePolynomial:
+    """A Motion as a trajectory in simulation time.  Velocity is linear between
+    knots, so the cubic Hermite through them is that same quadratic."""
+    return PiecewisePolynomial.CubicHermite(motion.t + t_release, motion.q.T, motion.v.T)
+
+
+@dataclass
+class CatchPlan:
+    """One planned motion to a catch."""
+
+    q_traj: PiecewisePolynomial | None  # in simulation time; None if the solve failed
+    t_catch: float  # simulation time the ball reaches the catch plane
+    p_catch: np.ndarray
+    est: Estimate | None  # what it was planned from; None for the baseline
+    solve_time: float  # wall-clock seconds
+    solve_ok: bool
+    fit_rank_deficient: bool = False  # fell back to nominal: too few observations
+    intercept_rejected: bool = False  # fell back to nominal: unbelievable intercept
+
+
+class CatchPlanner:
+    """Turns a target into a CatchPlan.  Every policy plans through this, so every
+    policy gets the same optimizer, limits and catch plane."""
+
+    def __init__(self, kin: Kinematics, toss_plan: toss.TossPlan):
+        self.kin = kin
+        self.toss_plan = toss_plan
+        # The catch relies on accelerations the model doesn't limit, so the plan must.
+        self.a_max = accel_limits(kin)["brake"]
+        self.z_catch = toss_plan.p_release[2] - toss.CATCH_DROP
+        self.nominal = nominal_catch(toss_plan)
+
+    def plan(self, t_rel, q0, v0, t_catch, p_catch, est=None, **flags) -> CatchPlan:
+        """Plan from (q0, v0) at t_rel to rest at p_catch at t_catch (both in s
+        after release).  A failed solve is reported, not retried: a retry one
+        approach gets and another doesn't would break the comparison."""
+        start = time.perf_counter()
+        motion = plan_reach(self.kin, self.toss_plan, q0, v0, t_rel, t_catch - t_rel,
+                            p_catch, self.a_max)
+        solve_time = time.perf_counter() - start
+        t_release = self.toss_plan.t_release
+        q_traj = None if motion is None else motion_to_trajectory(motion, t_release)
+        return CatchPlan(q_traj, t_release + t_catch, p_catch, est, solve_time,
+                         motion is not None, **flags)
+
+
+class CatchPolicy(Protocol):
+    def update(self, t_rel: float, est: Estimate | None, q_cmd: np.ndarray,
+               qdot_cmd: np.ndarray, plan: CatchPlan | None) -> CatchPlan | None:
+        """A new plan to adopt, or None to keep the current one.
+
+        t_rel     seconds since release
+        est       the current fit, or None if there isn't one yet
+        q_cmd     the position currently being commanded (not measured)
+        qdot_cmd  its derivative
+        plan      the plan being followed, or None before the first decision
+        """
+
+
+class OpenLoopPolicy:
+    """The reference baseline: uses no observations, and plans once, as soon as
+    the arm is free, to where the nominal toss comes down."""
+
+    def __init__(self, planner: CatchPlanner):
+        self.planner = planner
+        self.decided = False
+
+    def update(self, t_rel, est, q_cmd, qdot_cmd, plan):
+        if self.decided or t_rel < toss.BRAKE:
+            return None
+        self.decided = True
+        nominal = self.planner.nominal
+        return self.planner.plan(t_rel, q_cmd, qdot_cmd, nominal.t_catch, nominal.p_catch)
+
+
+class PredictOncePolicy:
+    """Approach A: at t_window, fit the flight so far, and plan once from that."""
+
+    def __init__(self, planner: CatchPlanner, t_window: float = T_WINDOW):
+        self.planner = planner
+        self.t_window = t_window
+        self.decided = False
+
+    def update(self, t_rel, est, q_cmd, qdot_cmd, plan):
+        if self.decided or t_rel < self.t_window:
+            return None
+        self.decided = True
+        nominal = self.planner.nominal
+        if est is None:
+            return self.planner.plan(t_rel, q_cmd, qdot_cmd, nominal.t_catch, nominal.p_catch,
+                                     fit_rank_deficient=True)
+        target = intercept(est, self.planner.z_catch, t_rel)
+        if target is None:
+            return self.planner.plan(t_rel, q_cmd, qdot_cmd, nominal.t_catch, nominal.p_catch,
+                                     est=est, intercept_rejected=True)
+        return self.planner.plan(t_rel, q_cmd, qdot_cmd, *target, est=est)
+
+
+@dataclass(frozen=True)
+class _Decision:
+    """The controller's abstract state: what it is following right now."""
+
+    plan: CatchPlan | None = None
+    t_close: float = np.inf  # simulation time of the decision to close
+    pending: CatchPlan | None = None  # planned, but its compute time hasn't passed
+    t_adopt: float = np.inf
+
+
+class CatchController(LeafSystem):
+    """Follows the toss, then whichever CatchPlan the policy last returned.
+
+    Runs at 200 Hz, but its commands are functions of time, so the arm sees the
+    same smooth trajectories it would from a TrajectorySource.  The policy and
+    the fit are per-run objects: a simulator only ever runs this forward.
+
+    latency delays the finger command by a fixed time, for every policy.
+    lead overrides how long before t_catch the decision to close is taken.
+    compute_latency delays when a plan may first be acted on.
+    """
+
+    def __init__(self, toss_plan, policy, fit, latency=T_LATENCY, lead=None, compute_latency=0.0):
+        LeafSystem.__init__(self)
+        self.set_name("catch_controller")
+        self.toss_plan = toss_plan
+        self.policy = policy
+        self.fit = fit
+        self.latency = latency
+        self.lead = lead
+        self.compute_latency = compute_latency
+        self.t_last_observation = -np.inf
+        self.plans: list[CatchPlan] = []  # every plan the policy returned
+        self.policy_calls = 0
+        self.plans_adopted = 0
+
+        self.observation_port = self.DeclareAbstractInputPort(
+            "observation", AbstractValue.Make(Observation(-1.0, np.zeros(3), None)))
+        self.decision_index = self.DeclareAbstractState(AbstractValue.Make(_Decision()))
+        self.DeclarePeriodicUnrestrictedUpdateEvent(CONTROL_PERIOD, CONTROL_OFFSET, self._tick)
+        # The commands depend on time and state, and not on the observation.
+        depends = {self.time_ticket(), self.abstract_state_ticket(self.decision_index)}
+        self.DeclareVectorOutputPort("iiwa_position", 7, self._calc_arm, prerequisites_of_calc=depends)
+        self.DeclareVectorOutputPort("wsg_position", 1, self._calc_fingers, prerequisites_of_calc=depends)
+
+    def _trajectory(self, plan):
+        """What the arm is following: the toss, which ends holding still at the
+        end of the brake, until there is a plan to follow instead."""
+        if plan is None or plan.q_traj is None:
+            return self.toss_plan.q_traj
+        return plan.q_traj
+
+    def _decision(self, context) -> _Decision:
+        return context.get_abstract_state(self.decision_index).get_value()
+
+    def _tick(self, context, state):
+        t = context.get_time()
+        t_release = self.toss_plan.t_release
+        t_rel = t - t_release
+
+        # Only samples strictly after release: at release the ball is in the fingers.
+        observation = self.observation_port.Eval(context)
+        if observation.t > max(self.t_last_observation, t_release + 1e-9):
+            self.fit.add(observation)
+            self.t_last_observation = observation.t
+        if t_rel < 0:
+            return
+
+        d = self._decision(context)
+        plan, t_close, pending, t_adopt = d.plan, d.t_close, d.pending, d.t_adopt
+        if pending is not None and t >= t_adopt - 1e-9:
+            plan, t_close, pending = pending, self._t_close(t, pending, t_close), None
+            self.plans_adopted += 1
+
+        trajectory = self._trajectory(plan)
+        new = self.policy.update(t_rel, self.fit.estimate(), trajectory.value(t).ravel(),
+                                 trajectory.EvalDerivative(t, 1).ravel(), plan)
+        self.policy_calls += 1
+        if new is not None:
+            self.plans.append(new)
+            if self.compute_latency <= 0:
+                plan, t_close = new, self._t_close(t, new, t_close)
+                self.plans_adopted += 1
+            else:
+                pending, t_adopt = new, t + self.compute_latency
+        if t_rel >= DECISION_DEADLINE and not self.plans:
+            raise RuntimeError(f"the policy returned no plan by {DECISION_DEADLINE} s after release")
+        state.get_mutable_abstract_state(self.decision_index).set_value(
+            _Decision(plan, t_close, pending, t_adopt))
+
+    def _t_close(self, t, plan, t_close):
+        """The decision to close, from this plan.  Once it has been taken it stands:
+        the fingers are already moving.  A failed solve never closes."""
+        if t >= t_close or not plan.solve_ok:
+            return t_close
+        return close_command_time(plan.t_catch, self.lead)
+
+    def _calc_arm(self, context, output):
+        t = context.get_time()
+        output.SetFromVector(self._trajectory(self._decision(context).plan).value(t).ravel())
+
+    def _calc_fingers(self, context, output):
+        t = context.get_time()
+        if t >= self._decision(context).t_close + self.latency:
+            output.SetFromVector([env.FINGER_CLOSED])
+        else:
+            output.SetFromVector(self.toss_plan.wsg_traj.value(t).ravel())
+
+
+@dataclass
+class CatchLog(toss.TossLog):
+    """A simulated toss and catch, one row per simulator step."""
+
+    q_cmd: np.ndarray = None  # arm joint positions commanded
+    finger_width: np.ndarray = None  # measured finger opening
+    finger_rate: np.ndarray = None  # its rate
+    grip_force: np.ndarray = None  # measured grip force
+    R_WG: np.ndarray = None  # gripper orientation, (n, 3, 3)
+
+
+@dataclass
+class CatchOutcome:
+    """How one catch went."""
+
+    caught: bool  # gripped by both fingers, with force, for HOLD_TIME
+    contact: bool  # the ball touched the gripper after leaving it
+    hold_time: float = 0.0  # s gripped continuously from when the fingers stopped
+    t_fingers_stopped: float | None = None  # simulation time
+    t_first_contact: float | None = None  # simulation time
+    timing_error: float = np.nan  # s: real crossing of the catch plane - planned
+    miss_horizontal: float = np.nan  # m: ball to pinch point at that crossing, horizontally
+    miss_vertical: float = np.nan  # m: pinch point height error at that crossing
+    miss_in_hand: np.ndarray = field(default_factory=lambda: np.full(3, np.nan))
+    # ball - pinch point in the gripper frame, m: closing axis, along the fingers, across the pad
+    predicted_miss: float = np.nan  # m: |planned catch point - real crossing|, the estimator alone
+    arm_arrival_error: float = np.nan  # m: |pinch at t_catch - planned catch point|, the tracker alone
+
+
+@dataclass
+class CatchRun:
+    """Everything one simulate_catch produced."""
+
+    toss_plan: toss.TossPlan
+    log: CatchLog
+    controller: CatchController
+    plant: object
+    outcome: CatchOutcome
+
+    @property
+    def plans(self) -> list[CatchPlan]:
+        return self.controller.plans
+
+
+@lru_cache(maxsize=1)
+def shared_kinematics() -> Kinematics:
+    return Kinematics()
+
+
+def build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode, latency, lead, compute_latency):
+    """The scene with a sensor and a CatchController wired in, extending
+    toss.add_toss_station.  Returns (diagram, toss plan, controller)."""
+    builder = DiagramBuilder()
+    station, plan = toss.add_toss_station(builder)
+    plant = station.GetSubsystemByName("plant")
+    ball = plant.GetBodyByName(env.BODY, plant.GetModelInstanceByName("ball"))
+
+    sensor = builder.AddSystem(BallSensor(ball.index(), rng_obs, sigma_p, sigma_v, obs_mode))
+    builder.Connect(station.GetOutputPort("body_poses"), sensor.GetInputPort("body_poses"))
+    builder.Connect(station.GetOutputPort("body_spatial_velocities"),
+                    sensor.GetInputPort("body_spatial_velocities"))
+
+    policy = policy_factory(CatchPlanner(shared_kinematics(), plan))
+    fit = BallisticFit(plan.t_release, sigma_p, sigma_v)
+    controller = builder.AddSystem(CatchController(plan, policy, fit, latency, lead, compute_latency))
+    builder.Connect(sensor.GetOutputPort("observation"), controller.GetInputPort("observation"))
+    builder.Connect(controller.GetOutputPort("iiwa_position"), station.GetInputPort("iiwa.position"))
+    builder.Connect(controller.GetOutputPort("wsg_position"), station.GetInputPort("wsg.position"))
+    return builder.Build(), plan, controller
+
+
+def simulate_catch(policy_factory, *, sigma_p=sensing.SIGMA_P, sigma_v=sensing.SIGMA_V,
+                   obs_mode=sensing.POSITION_ONLY, latency=T_LATENCY, lead=None,
+                   compute_latency=0.0, trial=0) -> CatchRun:
+    """Simulate one toss and catch.  policy_factory takes a CatchPlanner and
+    returns a policy, so a policy class will do.  The observation noise depends
+    only on the trial number, so a trial sees the same noise under every policy."""
+    rng_obs = np.random.default_rng([SEED_ROOT, trial, 1])
+    system, plan, controller = build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode,
+                                                  latency, lead, compute_latency)
+    toss.draw_planned_flight(plan)
+    simulator = Simulator(system)
+    context = simulator.get_mutable_context()
+    env.place_ball_in_gripper(system, context)
+
+    station = system.GetSubsystemByName("station")
+    plant = station.GetSubsystemByName("plant")
+    iiwa = plant.GetModelInstanceByName("iiwa")
+    ball = plant.GetBodyByName(env.BODY, plant.GetModelInstanceByName("ball"))
+    G = toss.gripper_frame(plant).body()
+    effort = station.GetOutputPort("iiwa_net_actuation")
+    fingers = station.GetOutputPort("wsg.state_measured")
+    force = station.GetOutputPort("wsg.force_measured")
+    command = controller.GetOutputPort("iiwa_position")
+    rows = []
+
+    def record(root_context):
+        plant_context = plant.GetMyContextFromRoot(root_context)
+        station_context = station.GetMyContextFromRoot(root_context)
+        X_WB = plant.EvalBodyPoseInWorld(plant_context, ball)
+        V_WB = plant.EvalBodySpatialVelocityInWorld(plant_context, ball)
+        X_WG = plant.EvalBodyPoseInWorld(plant_context, G)
+        width, rate = fingers.Eval(station_context)
+        rows.append((
+            root_context.get_time(), X_WB.translation(), V_WB.translational(),
+            toss.ball_contacts(plant, plant_context, ball), X_WG @ env.PINCH,
+            plant.GetPositions(plant_context, iiwa), plant.GetVelocities(plant_context, iiwa),
+            effort.Eval(station_context),
+            command.Eval(controller.GetMyContextFromRoot(root_context)),
+            width, rate, force.Eval(station_context)[0], X_WG.rotation().matrix(),
+        ))
+        return EventStatus.Succeeded()
+
+    simulator.set_monitor(record)
+    if not HEADLESS:
+        simulator.set_target_realtime_rate(1.0)
+    start_recording()
+    simulator.AdvanceTo(plan.q_traj.end_time())
+    publish_recording()
+
+    t, ball_p, ball_v, touching, pinch, arm_q, arm_v, arm_effort, q_cmd, width, rate, grip, R_WG = zip(*rows)
+    log = CatchLog(np.array(t), np.array(ball_p), np.array(ball_v), list(touching), np.array(pinch),
+                   np.array(arm_q), np.array(arm_v), np.array(arm_effort), np.array(q_cmd), np.array(width),
+                   np.array(rate), np.array(grip), np.array(R_WG))
+    return CatchRun(plan, log, controller, plant, score(plan, log, controller))
+
+
+def _at(t, times, values):
+    """values, one row per entry of times, interpolated at t."""
+    i = int(np.clip(np.searchsorted(times, t), 1, len(times) - 1))
+    a = (t - times[i - 1]) / (times[i] - times[i - 1])
+    return values[i - 1] + a * (values[i] - values[i - 1])
+
+
+def first_settled(rate: np.ndarray, rows: int = FINGER_SETTLED_ROWS) -> int | None:
+    """The first index from which the finger rate stays slow for this many rows,
+    or None.  A finger pushing the ball can pause for a moment on its way in."""
+    slow = np.abs(rate) < FINGER_STOPPED_SPEED
+    for i in range(len(rate) - rows + 1):
+        if slow[i:i + rows].all():
+            return i
+    return None
+
+
+def score(plan: toss.TossPlan, log: CatchLog, controller: CatchController) -> CatchOutcome:
+    """Decide whether the ball was caught, and measure how the catch went."""
+    fly = toss.free_flight(plan, log)
+    if fly.i_free is None:
+        return CatchOutcome(False, False)
+    gripper = [i for i in range(fly.i_free, len(log.t))
+               if any(name.startswith("wsg::") for name in log.touching[i])]
+    outcome = CatchOutcome(False, bool(gripper))
+    if gripper:
+        outcome.t_first_contact = log.t[gripper[0]]
+
+    chosen = controller.plans[-1] if controller.plans else None
+    if chosen is None:
+        return outcome
+    if fly.t_down is not None:
+        outcome.timing_error = fly.t_down - chosen.t_catch
+        pinch = _at(fly.t_down, log.t, log.pinch)
+        outcome.miss_horizontal = np.linalg.norm((fly.p_down - pinch)[:2])
+        outcome.miss_vertical = pinch[2] - fly.p_down[2]
+        R_WG = log.R_WG[np.searchsorted(log.t, fly.t_down)]
+        outcome.miss_in_hand = R_WG.T @ (fly.p_down - pinch)
+        outcome.predicted_miss = np.linalg.norm(chosen.p_catch - fly.p_down)
+    outcome.arm_arrival_error = np.linalg.norm(_at(chosen.t_catch, log.t, log.pinch) - chosen.p_catch)
+
+    # The hold is timed from when the fingers stop closing, some time after the
+    # command reaches them.
+    if not chosen.solve_ok:
+        return outcome
+    t_command = close_command_time(chosen.t_catch, controller.lead) + controller.latency
+    closing = np.flatnonzero(log.t >= t_command)
+    moved = closing[log.finger_rate[closing] < -FINGER_STOPPED_SPEED]
+    if len(moved) == 0:
+        return outcome
+    settled = first_settled(log.finger_rate[moved[0]:])
+    if settled is None:
+        return outcome
+    i_stop = moved[0] + settled
+    outcome.t_fingers_stopped = log.t[i_stop]
+    i_end = i_stop
+    while (i_end < len(log.t)
+           and {"wsg::left_finger", "wsg::right_finger"} <= log.touching[i_end]
+           and log.grip_force[i_end] >= GRIP_FORCE_MIN):
+        i_end += 1
+    outcome.hold_time = log.t[i_end - 1] - log.t[i_stop] if i_end > i_stop else 0.0
+    outcome.caught = outcome.hold_time >= HOLD_TIME
+    return outcome
+
+
+def report(run: CatchRun) -> None:
+    """Print one trial's record."""
+    o, plans = run.outcome, run.plans
+    print(f"caught: {o.caught}   contact: {o.contact}   held {o.hold_time:.3f} s")
+    print(f"policy calls {run.controller.policy_calls}, plans adopted {run.controller.plans_adopted}")
+    if plans:
+        plan = plans[-1]
+        t_release = run.toss_plan.t_release
+        print(f"plan:   solve_ok {plan.solve_ok} in {plan.solve_time * 1e3:.0f} ms; catch at "
+              f"{plan.t_catch - t_release:.4f} s after release at {np.round(plan.p_catch, 4)} m")
+    print(f"timing error {o.timing_error * 1e3:.2f} ms; predicted miss {o.predicted_miss * 1e2:.2f} cm; "
+          f"arm arrival error {o.arm_arrival_error * 1e2:.2f} cm")
+    print(f"miss horizontal {o.miss_horizontal * 1e2:.2f} cm, vertical {o.miss_vertical * 1e2:.2f} cm; "
+          f"in hand (closing, fingers, pad) {np.round(o.miss_in_hand * 1e2, 2)} cm")
+    if o.t_first_contact is not None:
+        print(f"first contact {o.t_first_contact - run.toss_plan.t_release:.4f} s after release")
+    if o.t_fingers_stopped is not None:
+        print(f"fingers stopped {o.t_fingers_stopped - run.toss_plan.t_release:.4f} s after release")
+    print(f"ball ends at {np.round(run.log.ball_p[-1], 3)}")
+
+
+POLICIES = {"open_loop": OpenLoopPolicy, "predict_once": PredictOncePolicy}
+
+
+if __name__ == "__main__":
+    name = sys.argv[1] if len(sys.argv) > 1 else "open_loop"
+    report(simulate_catch(POLICIES[name], sigma_p=0.0))
+    keep_meshcat_open()
