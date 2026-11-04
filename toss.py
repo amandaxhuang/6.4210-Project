@@ -1,8 +1,8 @@
-"""An underhand toss: swing the ball up and forward, and let go.
+"""An underhand toss: swing the ball up and let go.
 
-Arm starts low with the palm up, swings up and forward through the
-release pose, opens the fingers, and brakes hard so  ball flies on in a
-parabola. 
+Arm starts low, swings up through the release pose with its joints at their
+velocity limits, opens the fingers, and brakes hard so ball flies on in a
+parabola.
 
 """
 
@@ -35,29 +35,33 @@ from utils.viz import (
 )
 
 G_ACCEL = 9.81
-TOSS_SPEED = 1.5 # 1.5 m/s
-TOSS_ANGLE = 80.0 # 80 degrees; at 65 the arm cannot reach the catch in time (results/catch_feasibility.md)
-CATCH_DROP = 0.1 # Ball rises about 11 cm and comes down CATCH_DROP below release height
+TOSS_SPEED = 2.720 # m/s; about the most RELEASE_POSE can do within VELOCITY_MARGIN
+TOSS_ANGLE = 76.50 # degrees above horizontal
+TOSS_HEADING = -123.74 # Direction of the toss around z, degrees from +x
+CATCH_DROP = 0.1 # Ball rises about 36 cm and comes down CATCH_DROP below release height
 
-# Arm pose at the instant of release.  Found by searching for a pose whose
-# hand can move fastest along a 65 degree toss within the joint velocity
-# limits (about 1.67 m/s) while the gripper points within 25 degrees of the
-# toss, so the ball leaves along the palm.  For the 80 degree toss the gripper
-# is 20 degrees off.  The pinch point is at about [0.65, 0, 0.54] m.
-RELEASE_POSE = np.array([-2.34, -1.39, 1.99, -1.45, -1.62, 1.61, -1.0])
+# Arm pose at the instant of release, from release_search.py: the highest peak
+# it found with the pinch point 0.75 to 0.80 m up and time left to catch the
+# ball.  Joints 2 to 6 all run at their limits and add up to about 2.65 m/s
+# upward.  The gripper is about 67 degrees off the toss, with the fingers'
+# closing axis within 5 degrees of square to it, so the ball leaves between the
+# open fingers.  The pinch point is at about [0.80, 0, 0.77] m.
+RELEASE_POSE = np.array([-2.483, -0.92, -1.028, 0.716, 2.091, 1.023, -1.452])
 
 # Timing of the motion, in seconds.
 SETTLE = 0.5  # hold still at the start so the grip settles
-SWING = 0.25  # constant acceleration from rest at the start pose to release speed
-BRAKE = 0.05  # constant deceleration from release speed to rest
+SWING = 0.5  # constant acceleration from rest at the start pose to release speed.  SETTLE + SWING
+              # is kept on a multiple of 50 ms, so the open command lands on a WSG controller update.
+BRAKE = 0.1  # constant deceleration from release speed to rest; at 0.05 s the joints hit their torque limits
 AFTER = 1.5   # keep simulating after arm stops, to watch the ball
 
 # When to send the finger-open command, this long before the release instant.
 OPEN_LEAD = 0.0 # Can tune this for gripper delay layer?
 
 # The release joint velocities may use at most this fraction of each joint's
-# velocity limit, leaving headroom for tracking error.
-VELOCITY_MARGIN = 0.9
+# velocity limit.  The joints overshoot by a little more than this leaves just
+# after release, so measured speeds peak right at the limit: see report().
+VELOCITY_MARGIN = 0.986
 # How much to discourage spinning the gripper at release, relative to joint
 # effort (1 / (rad/s)^2).  Spin is not forbidden: the fingers are already
 # opening, so a little rotation barely affects the ball.
@@ -70,11 +74,13 @@ FINGER_OPEN = 0.107
 CATCH_TILT = 25.0
 
 
-def release_velocity(speed: float = TOSS_SPEED, angle: float = TOSS_ANGLE) -> np.ndarray:
+def release_velocity(
+    speed: float = TOSS_SPEED, angle: float = TOSS_ANGLE, heading: float = TOSS_HEADING
+) -> np.ndarray:
     """Ball velocity at release, in world coordinates: `speed` m/s at `angle`
-    degrees above horizontal, aimed in +x."""
-    a = np.radians(angle)
-    return speed * np.array([np.cos(a), 0.0, np.sin(a)])
+    degrees above horizontal, aimed `heading` degrees around z from +x."""
+    a, h = np.radians(angle), np.radians(heading)
+    return speed * np.array([np.cos(a) * np.cos(h), np.cos(a) * np.sin(h), np.sin(a)])
 
 
 @dataclass
@@ -146,9 +152,8 @@ def plan_toss(plant, v_release: np.ndarray | None = None) -> TossPlan:
     seconds covers u * SWING / 2, so the start pose is that far back:
     q_start = RELEASE_POSE - u * SWING / 2.  Swinging from there reaches u
     exactly at the release pose, where the gripper's velocity is
-    J(RELEASE_POSE) u = v_release.  Because the release velocity points up and
-    forward, the start pose is lower and closer to the robot: the underhand
-    wind-up.  Braking to rest over BRAKE seconds then decelerates the hand far
+    J(RELEASE_POSE) u = v_release.  Because the release velocity points mostly
+    up, the start pose is lower: the underhand wind-up.  Braking to rest over BRAKE seconds then decelerates the hand far
     faster than gravity, so the ball leaves it.
 
     Also sets the plant's default arm positions to the start pose, so a
@@ -305,24 +310,47 @@ def ball_contacts(plant, plant_context, ball) -> frozenset[str]:
     return frozenset(names)
 
 
-def run():
-    """Simulate one toss, then compare the ball's flight with the plan."""
-    system, plan = build_toss_system()
+@dataclass
+class TossLog:
+    """A simulated toss, one row per simulator step."""
+
+    t: np.ndarray
+    ball_p: np.ndarray  # ball center, world frame
+    ball_v: np.ndarray  # ball velocity, world frame
+    touching: list[frozenset[str]]  # bodies touching the ball
+    pinch: np.ndarray  # pinch point, world frame
+    arm_q: np.ndarray  # arm joint positions
+    arm_v: np.ndarray  # arm joint velocities
+    arm_effort: np.ndarray  # torque applied at each arm joint
+
+
+def simulate(plan_fn=plan_toss):
+    """Simulate one toss.  Returns (plan, log, plant)."""
+    system, plan = build_toss_system(plan_fn)
     draw_planned_flight(plan)
     simulator = Simulator(system)
     context = simulator.get_mutable_context()
     env.place_ball_in_gripper(system, context)
 
-    plant = system.GetSubsystemByName("station").GetSubsystemByName("plant")
+    station = system.GetSubsystemByName("station")
+    plant = station.GetSubsystemByName("plant")
+    iiwa = plant.GetModelInstanceByName("iiwa")
     ball = plant.GetBodyByName(env.BODY, plant.GetModelInstanceByName("ball"))
-    log = []  # (t, ball position, ball velocity, bodies touching the ball)
+    G = gripper_frame(plant).body()
+    effort = station.GetOutputPort("iiwa_net_actuation")
+    rows = []
 
     def record(root_context):
         plant_context = plant.GetMyContextFromRoot(root_context)
         X = plant.EvalBodyPoseInWorld(plant_context, ball)
         V = plant.EvalBodySpatialVelocityInWorld(plant_context, ball)
-        log.append((root_context.get_time(), X.translation(), V.translational(),
-                    ball_contacts(plant, plant_context, ball)))
+        rows.append((
+            root_context.get_time(), X.translation(), V.translational(),
+            ball_contacts(plant, plant_context, ball),
+            plant.EvalBodyPoseInWorld(plant_context, G) @ env.PINCH,
+            plant.GetPositions(plant_context, iiwa), plant.GetVelocities(plant_context, iiwa),
+            effort.Eval(station.GetMyContextFromRoot(root_context)),
+        ))
         return EventStatus.Succeeded()
 
     simulator.set_monitor(record)
@@ -332,28 +360,91 @@ def run():
     simulator.AdvanceTo(plan.q_traj.end_time())
     publish_recording()
 
+    t, ball_p, ball_v, touching, pinch, arm_q, arm_v, arm_effort = zip(*rows)
+    log = TossLog(np.array(t), np.array(ball_p), np.array(ball_v), list(touching),
+                  np.array(pinch), np.array(arm_q), np.array(arm_v), np.array(arm_effort))
+    return plan, log, plant
+
+
+def run():
+    """Simulate one toss, then compare the ball's flight with the plan."""
+    plan, log, plant = simulate()
     report(plan, log, plant)
 
 
-def report(plan: TossPlan, log, plant):
-    """Print the planned and simulated release and flight, and whether the arm
-    can reach the catch point.
+def arm_limits(plant) -> tuple[np.ndarray, np.ndarray]:
+    """Each arm joint's velocity limit (rad/s) and effort limit (N m)."""
+    iiwa = plant.GetModelInstanceByName("iiwa")
+    effort = [plant.get_joint_actuator(i).effort_limit() for i in plant.GetJointActuatorIndices(iiwa)]
+    return plant.GetVelocityUpperLimits()[arm_slice(plant)], np.array(effort)
 
-    Only the free flight is compared with the plan: from when the ball stops
-    touching the fingers to when it next touches anything.  If that contact
-    comes before the catch height (with a steep toss, the ball can come down
-    onto the open fingers, parked where the brake left them), the crossing is
-    extrapolated from the ball's state just before it.
-    """
-    t = np.array([entry[0] for entry in log])
-    p = np.array([entry[1] for entry in log])
-    v = np.array([entry[2] for entry in log])
-    touching = [entry[3] for entry in log]
+
+@dataclass
+class Flight:
+    """What the ball did after release, from a TossLog.  Only the free flight is
+    measured: from when the ball stops touching the fingers to when it next
+    touches anything."""
+
+    i_release: int  # row where the ball leaves the hand
+    i_free: int | None  # first row after release touching nothing; None if it never left
+    i_hit: int  # next row touching something; len(log.t) if nothing
+    apex: float = np.nan  # highest point of the free flight (m)
+    off: float = np.nan  # farthest from the planned parabola (m)
+    t_down: float | None = None  # simulation time at catch height, None if never
+    p_down: np.ndarray | None = None  # where it came down through catch height
+    extrapolated: bool = False  # the crossing came after the ball hit something
+
+
+def free_flight(plan: TossPlan, log: TossLog) -> Flight:
+    """Measure the ball's free flight against the plan.  If the ball touches
+    something before the catch height (with a steep toss, it can come down onto
+    the open fingers, parked where the brake left them), the crossing is
+    extrapolated from its state just before."""
+    t, p, v, touching = log.t, log.ball_p, log.ball_v, log.touching
 
     # The ball's fastest moment near the planned release is when it leaves the
     # hand.  (Only near it: the ball is faster still when it hits the floor.)
     near = np.abs(t - plan.t_release) <= 0.1
     i_rel = np.flatnonzero(near)[np.argmax(np.linalg.norm(v[near], axis=1))]
+
+    # Free flight: from the first sample after release touching nothing, to the
+    # next sample touching something.
+    free = [i for i in range(i_rel, len(t)) if not touching[i]]
+    if not free:
+        return Flight(i_rel, None, len(t))
+    i_free = free[0]
+    i_hit = next((i for i in range(i_free, len(t)) if touching[i]), len(t))
+    flight = slice(i_free, i_hit)
+    i_apex = i_free + np.argmax(p[flight, 2])
+    planned = ballistic_position(plan.p_release, plan.v_release, t[flight] - plan.t_release)
+    result = Flight(i_rel, i_free, i_hit, p[i_apex, 2],
+                    np.linalg.norm(p[flight] - planned, axis=1).max())
+
+    # First free-flight sample at or below the catch height on the way down,
+    # interpolated; or, if the ball touched something before getting there,
+    # the crossing extrapolated from its last free-flight state.
+    z_catch = catch_point(plan)[1][2]
+    below = np.flatnonzero(p[i_apex:i_hit, 2] <= z_catch)
+    if len(below) and i_apex + below[0] > i_free:
+        k = i_apex + below[0]
+        a = (p[k - 1, 2] - z_catch) / (p[k - 1, 2] - p[k, 2])
+        result.t_down = t[k - 1] + a * (t[k] - t[k - 1])
+        result.p_down = p[k - 1] + a * (p[k] - p[k - 1])
+    elif p[i_hit - 1, 2] > z_catch:
+        k = i_hit - 1
+        dt = time_to_height(p[k], v[k], z_catch)
+        result.t_down = t[k] + dt
+        result.p_down = ballistic_position(p[k], v[k], dt)
+        result.extrapolated = True
+    return result
+
+
+def report(plan: TossPlan, log: TossLog, plant):
+    """Print the planned and simulated release and flight, how close the arm
+    came to its limits, and whether it can reach the catch point."""
+    t, p, v = log.t, log.ball_p, log.ball_v
+    fly = free_flight(plan, log)
+    i_rel = fly.i_release
 
     t_plan, p_plan = catch_point(plan)
     apex_plan = plan.p_release[2] + plan.v_release[2] ** 2 / (2 * G_ACCEL)
@@ -365,50 +456,27 @@ def report(plan: TossPlan, log, plant):
     print(f"simulated: release at t = {t[i_rel]:.3f} s from {np.round(p[i_rel], 3)} m "
           f"at {np.round(v[i_rel], 3)} m/s")
 
-    # Free flight: from the first sample after release touching nothing, to the
-    # next sample touching something.
-    free = [i for i in range(i_rel, len(t)) if not touching[i]]
-    if not free:
+    if fly.i_free is None:
         print("           the ball never left the fingers")
     else:
-        i_free = free[0]
-        i_hit = next((i for i in range(i_free, len(t)) if touching[i]), len(t))
-        flight = slice(i_free, i_hit)
-        i_apex = i_free + np.argmax(p[flight, 2])
-        planned = ballistic_position(plan.p_release, plan.v_release, t[flight] - plan.t_release)
-        off = np.linalg.norm(p[flight] - planned, axis=1).max()
-        print(f"           free flight {t[i_free] - t[i_rel]:.3f} to {t[i_hit - 1] - t[i_rel]:.3f} s "
-              f"after release, at most {100 * off:.1f} cm from the planned parabola")
-
-        # First free-flight sample at or below the catch height on the way
-        # down, interpolated; or, if the ball touched something before getting
-        # there, the crossing extrapolated from its last free-flight state.
-        z_catch = p_plan[2]
-        below = np.flatnonzero(p[i_apex:i_hit, 2] <= z_catch)
-        if len(below) and i_apex + below[0] > i_free:
-            k = i_apex + below[0]
-            a = (p[k - 1, 2] - z_catch) / (p[k - 1, 2] - p[k, 2])
-            t_down = t[k - 1] + a * (t[k] - t[k - 1])
-            p_down = p[k - 1] + a * (p[k] - p[k - 1])
-            how = ""
-        elif p[i_hit - 1, 2] > z_catch:
-            k = i_hit - 1
-            dt = time_to_height(p[k], v[k], z_catch)
-            t_down = t[k] + dt
-            p_down = ballistic_position(p[k], v[k], dt)
-            how = ", extrapolated from free flight"
+        print(f"           free flight {t[fly.i_free] - t[i_rel]:.3f} to {t[fly.i_hit - 1] - t[i_rel]:.3f} s "
+              f"after release, at most {100 * fly.off:.1f} cm from the planned parabola")
+        if fly.t_down is None:
+            print(f"           apex {fly.apex:.3f} m; never came down to the catch height")
         else:
-            t_down = None
-        if t_down is None:
-            print(f"           apex {p[i_apex, 2]:.3f} m; never came down to the catch height")
-        else:
-            miss = np.linalg.norm((p_down - p_plan)[:2])
-            print(f"           apex {p[i_apex, 2]:.3f} m; at catch height after "
-                  f"{t_down - t[i_rel]:.3f} s at {np.round(p_down, 3)} m "
+            miss = np.linalg.norm((fly.p_down - p_plan)[:2])
+            how = ", extrapolated from free flight" if fly.extrapolated else ""
+            print(f"           apex {fly.apex:.3f} m; at catch height after "
+                  f"{fly.t_down - t[i_rel]:.3f} s at {np.round(fly.p_down, 3)} m "
                   f"({100 * miss:.1f} cm from the planned point{how})")
-        if i_hit < len(t):
-            print(f"first contact after release: {', '.join(sorted(touching[i_hit]))} at "
-                  f"{t[i_hit] - t[i_rel]:.3f} s after release, ball at {np.round(p[i_hit], 3)} m")
+        if fly.i_hit < len(t):
+            print(f"first contact after release: {', '.join(sorted(log.touching[fly.i_hit]))} at "
+                  f"{t[fly.i_hit] - t[i_rel]:.3f} s after release, ball at {np.round(p[fly.i_hit], 3)} m")
+
+    v_max, effort_max = arm_limits(plant)
+    speed, effort = np.abs(log.arm_v).max(axis=0) / v_max, np.abs(log.arm_effort).max(axis=0) / effort_max
+    print(f"arm:       peak joint speed {speed.max():.3f} of limit (joint {speed.argmax() + 1}); "
+          f"peak torque {effort.max():.3f} of limit (joint {effort.argmax() + 1})")
 
     q_catch = catch_pose(plant, p_plan)
     if q_catch is None:

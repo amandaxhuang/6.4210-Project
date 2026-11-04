@@ -6,15 +6,15 @@
 2. Minimum time to the catch pose.  The fastest the arm can get from the toss
    to any pose that puts the pinch point at the planned catch point with the
    gripper within CATCH_TILT of up, and stop there, for tosses at TOSS_SPEED
-   and each of TOSS_ANGLES.  Two hand-offs:
+   and each of TOSS_ANGLES that it can reach.  Two hand-offs:
      - post-brake: from rest at the end of the toss's brake, as toss.py does now
      - release:    straight from the release state (RELEASE_POSE moving at u),
                    skipping the brake
    The model has no acceleration limits, so each is solved under three:
      - "brake": VELOCITY_MARGIN * v_max / BRAKE, what the toss's brake already
-                commands (about 18 v_max per second)
+                commands (about 10 v_max per second)
      - "swing": VELOCITY_MARGIN * v_max / SWING, what the toss's swing commands
-                (about 3.6 v_max per second)
+                (about 2 v_max per second)
      - "none":  velocity limits only, a lower bound
    Velocities stay within VELOCITY_MARGIN of the limits, as in toss.py.
 
@@ -65,9 +65,11 @@ POSITION_TOL = 0.003  # how close the pinch point must get to the target (m), as
 CLOSE_COMMAND_TIMES = [0.300, 0.310, 0.320, 0.330, 0.340]
 FORCE_LIMITS = [20.0, 40.0, 80.0]  # N; 40 is the controller's default
 
-TOSS_ANGLES = [65, 70, 75, 80, 85, 90]  # degrees above horizontal; 65 was toss.TOSS_ANGLE
-ENVELOPE_ANGLES = [75, 80, 85]
-CUTOFFS = [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.32]  # s after release
+# Degrees above horizontal.  At TOSS_SPEED the arm is at its limit, so other
+# angles may not be reachable: those get a row saying so.
+TOSS_ANGLES = [70, 75, toss.TOSS_ANGLE, 80, 85]
+ENVELOPE_ANGLES = [toss.TOSS_ANGLE]
+CUTOFFS = [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55]  # s after release
 DIRECTIONS = {"+x": [1, 0, 0], "-x": [-1, 0, 0], "+y": [0, 1, 0], "-y": [0, -1, 0]}
 
 # Observation model for the prediction-error column (week 1 spec, section 8).
@@ -389,7 +391,11 @@ def report_min_time(kin):
           "| release: brake | swing | none | joints at velocity limit (post-brake, brake) |")
     print("|---|---|---|---|---|---|---|---|---|---|")
     for angle in TOSS_ANGLES:
-        plan = toss.plan_toss(kin.plant, toss.release_velocity(toss.TOSS_SPEED, angle))
+        try:
+            plan = toss.plan_toss(kin.plant, toss.release_velocity(toss.TOSS_SPEED, angle))
+        except ValueError:
+            print(f"| {angle} | not reachable at {toss.TOSS_SPEED} m/s | | | | | | | | |")
+            continue
         t_catch, p_catch = toss.catch_point(plan)
         arrivals, saturated = [], ""
         for name, t0, q0, v0 in hand_offs(plan):

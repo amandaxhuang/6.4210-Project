@@ -8,6 +8,11 @@
 **Companion:** `planning/approach-b-closed-loop-replanning.md`
 **Status:** Draft for team review
 
+**Updated 2026-11-04:** all toss numbers now follow the 2.72 m/s toss in
+`results/catch_feasibility.md`, released at 0.77 m. Three things changed enough to need a team
+decision: how toss noise is applied (§12), the nominal σ_p (§14), and gripper timing, which is now
+tighter than the pad height (§10).
+
 ---
 
 ## 1. Purpose and Scope
@@ -55,8 +60,9 @@ below assumes it.
 | File | What it gives us | Status |
 |---|---|---|
 | `environment.py` | iiwa14 + WSG 50 + floor + ball scene; `make_scenario()`, `place_ball_in_gripper()`; the `PINCH` point and finger constants | Working |
-| `toss.py` | `plan_toss()` → a `TossPlan` (joint trajectory, finger schedule, release state); `ballistic_position()`, `time_to_height()`, `catch_point()`, `catch_pose()` (IK), `ball_contacts()`, `arm_slice()`, `gripper_frame()` | Working at 80° |
+| `toss.py` | `plan_toss()` → a `TossPlan` (joint trajectory, finger schedule, release state); `ballistic_position()`, `time_to_height()`, `catch_point()`, `catch_pose()` (IK), `ball_contacts()`, `arm_slice()`, `gripper_frame()`; `simulate()` → a `TossLog` with measured joint speeds and torques, `free_flight()`, `arm_limits()` | Working at 76.5° |
 | `feasibility.py` | `Kinematics`, `Motion`, `plan_reach()` (trajectory optimization to a catch pose), `min_time()`, `prediction_error()`, `accel_limits()` | Working, offline only |
+| `release_search.py` | The search that found the release pose; `results/release_search.md` has its tables | Offline only |
 | `results/catch_feasibility.md` | The timing and error budget this spec is built on | Current |
 
 **Note the layout divergence.** The Week 1 spec proposed a `tosscatch/` package with a
@@ -67,62 +73,65 @@ should be done in one commit, not drifted into.
 
 ### The key numbers, from `results/catch_feasibility.md`
 
-All at the current operating point: `TOSS_SPEED = 1.5` m/s, `TOSS_ANGLE = 80°`,
-`CATCH_DROP = 0.1` m.
+All at the current operating point: `TOSS_SPEED = 2.72` m/s, `TOSS_ANGLE = 76.5°`,
+`TOSS_HEADING = -123.74°`, `CATCH_DROP = 0.1` m, `SWING = 0.5` s, `BRAKE = 0.1` s,
+`VELOCITY_MARGIN = 0.986`.
 
 | Quantity | Value |
 |---|---|
-| Release (pinch) point | `[0.651, 0, 0.541]` m |
-| Release velocity | `[0.261, 0, 1.477]` m/s |
-| Apex above release | 0.111 m |
-| Catch point (nominal) | `[0.744, 0.004, 0.443]` m |
-| Ball reaches catch plane | **0.358 s** after release |
-| Ball speed at catch plane | 2.04 m/s, downward |
-| Brake ends | 0.050 s after release |
-| Earliest the arm can arrive at rest | **0.216 s** after release (brake-level acceleration) |
-| Slack | **0.142 s** |
+| Release (pinch) point | `[0.800, 0, 0.774]` m |
+| Release velocity | `[-0.353, -0.528, 2.645]` m/s |
+| Apex above release | 0.357 m (peak 1.130 m planned, 1.128 m simulated) |
+| Catch point (nominal) | `[0.597, -0.304, 0.674]` m |
+| Ball reaches catch plane | **0.575 s** after release |
+| Ball speed at catch plane | 2.99 m/s, downward |
+| Brake ends | 0.100 s after release |
+| Earliest the arm can arrive at rest | **0.510 s** after release (brake-level acceleration) |
+| Slack | **0.065 s** |
 | Gripper: command → pads at ball width | 20–28 ms (3 ms to start moving; 8 ms spread from the WSG controller's 50 ms update) |
 | Lateral catch tolerance | **±1.6 cm** — pad faces open to 0.112 m (`FINGER_OPEN` 0.107 + 0.005 pad offset) against an 0.08 m ball |
 | Vertical catch tolerance | ~2 cm (pad height) |
-| Correction envelope toward +x at 0.10 s | 4.4 cm (shrinking to 2.3 cm at 0.25 s, 0.9 cm at 0.30 s) |
+| Correction envelope in the tightest direction (−y) at 0.10 s | 6.3 cm (4.5 cm at 0.25 s, 4.2 cm at 0.30 s, 4.0 cm at 0.40 s, 1.2 cm at 0.50 s) |
+| Simulated catch point vs planned | 1.4 cm, repeatable, mostly along +x |
 
-### Two deviations from the proposal that must be recorded in the paper
+### Two things that must be recorded in the paper
 
-1. **Flight time is 0.358 s, not the proposed 0.5–0.65 s.** Week 1 derived that the proposed
-   window needs a 2.45–3.19 m/s vertical release; `toss.py` found the arm cannot exceed about
-   1.67 m/s along the toss direction at a pose it can also catch from, within 90% of the joint
-   velocity limits. We tossed slower and steeper instead. This is a limitation, not a bug, and
-   it shortens every budget below.
+1. **The toss runs at the joint velocity limits.** Measured joint speeds peak at 0.999 × limit, with
+   the commanded cap at 0.986. That is what puts the flight inside the proposal's window: 0.575 s to
+   the catch plane against 0.5–0.65 s, from a 2.65 m/s vertical release (Week 1 derived 2.45–3.19 m/s).
+   Two costs: no headroom for a faster toss, which is why toss noise is a problem (§12), and a toss
+   13.5° off vertical that drifts about 0.37 m back toward the base before the catch.
 2. **The catch relies on accelerations the model does not limit.** `results/catch_feasibility.md`
-   finding 3: under the swing's acceleration (≈3.6·v_max/s) no toss angle is catchable; under
-   the brake's (≈18·v_max/s, 24–42 rad/s²) 80° works. The iiwa14 SDF has no acceleration limits
-   and Drake does not enforce any. **Every catch motion this spec plans must carry the brake
-   acceleration limit explicitly** (`feasibility.accel_limits()["brake"]`), and the paper must
-   state it as an assumption.
+   finding 6: under the swing's acceleration (≈2·v_max/s) the arm arrives at 0.887 s, far too late;
+   under the brake's (≈10·v_max/s, 13–23 rad/s²) it arrives at 0.510 s. The iiwa14 SDF has no
+   acceleration limits and Drake does not enforce any. Torque is different: the simulator clips it
+   at the effort limits, and a 0.05 s brake hit them, which is why `BRAKE` is 0.1 s. **Every catch
+   motion this spec plans must carry the brake acceleration limit explicitly**
+   (`feasibility.accel_limits()["brake"]`), and the paper must state it as an assumption.
 
 ---
 
 ## 3. The Approach in One Timeline
 
-Times are seconds after release (release is at t = 0.75 s of simulation time: `SETTLE` 0.5 +
-`SWING` 0.25).
+Times are seconds after release (release is at t = 1.00 s of simulation time: `SETTLE` 0.5 +
+`SWING` 0.5).
 
 ```
  t=0.000  release; fingers open; ball in free flight
  t=0.000  estimator starts collecting observations at 100 Hz
- t=0.050  brake ends; arm at rest at q_stop
+ t=0.100  brake ends; arm at rest at q_stop
  t=0.100  DECISION INSTANT (t_window)
           - batch least-squares fit of (p0, v0) from the 10 observations so far
           - intersect the fitted parabola with the catch plane -> (t_catch, p_catch)
           - solve ONE trajectory optimization: rest at q_stop -> rest at p_catch at t_catch
           - freeze the close-command time t_close = t_catch - (close time + latency)
  t=0.100  arm begins the catch motion; NOTHING is recomputed after this instant
- ~0.30    gripper close command issued at t_close
- t=0.358  ball crosses the catch plane
+ ~0.52    gripper close command issued at t_close
+ t=0.575  ball crosses the catch plane
  +0.5 s   catch is scored (ball still held, non-zero grip force)
 ```
 
-The baseline is the same picture with the decision instant at t = 0.050 and **no observations
+The baseline is the same picture, also deciding at t = 0.100, with **no observations
 used at all**: it goes to the nominal catch point computed from the nominal toss plan.
 
 ---
@@ -259,11 +268,10 @@ Two rules that matter more than they look:
 
 ### 6.2 Observation mode: position-only is the headline
 
-`results/catch_feasibility.md` finding 6 is the reason this matters:
+`results/catch_feasibility.md` finding 8 is the reason this matters:
 
-> With σ_p = 5 mm, a prediction from the first 100 ms is off by 1.5 cm (1σ per axis), about the
-> gripper's ±1.6 cm tolerance. [...] With σ_v = 0.05 m/s readings, the 100 ms prediction is
-> already good to 0.5 cm and there is little left for replanning to fix.
+> A prediction from the first 100 ms is off by 2.5 cm (1σ per axis), more than the gripper's
+> ±1.6 cm. [...] With velocity readings the 100 ms prediction is already 0.8 cm.
 
 Giving every approach a clean velocity channel measures mostly the sensor, not the strategy.
 Week 1 §8 left this open; the feasibility numbers close it:
@@ -284,8 +292,9 @@ This is a change from Week 1's provisional default and should be noted as such i
 | σ_v | n/a (position-only) | {0.02, 0.05, 0.1, 0.2} m/s, only in the secondary mode |
 | Observation rate | 100 Hz | fixed |
 
-σ_p = 5 mm is deliberately the interesting point: the resulting 1.5 cm prediction error sits
-right at the ±1.6 cm pad clearance, so A should be marginal there and B should have room. σ_p = 0
+σ_p = 5 mm was chosen to put A at the pad clearance. At this toss its 100 ms prediction error is
+2.5 cm, past the ±1.6 cm clearance, so A should struggle there and B should have room; §14 asks
+whether to lower it. σ_p = 0
 is the control that the proposal's baseline goal is stated against; σ_p = 20 mm should break A
 outright.
 
@@ -300,7 +309,7 @@ The estimator must know what `t = 0` means. Three options, in order of preferenc
 1. **Use the commanded release instant** (`plan.t_release`). The robot opened its own fingers;
    knowing when it did is not cheating. **Default.**
 2. Detect it from the observations (vertical acceleration settles to −g). Needs ~3 samples =
-   30 ms, which is 30 ms off the front of a 142 ms budget. Keep as a flag for the paper's
+   30 ms, which is 30 ms off the front of a 65 ms budget. Keep as a flag for the paper's
    "what if the catcher does not know the thrower" discussion.
 3. Detect it from contact results. Not a sensor a real catcher has. Do not use.
 
@@ -361,7 +370,7 @@ p_catch = ballistic_position(est.p0, est.v0, t_catch)
 ```
 
 - **The catch plane is fixed, shared, and nominal.** `Z_CATCH = p_release_nominal[2] - CATCH_DROP
-  = 0.443` m, computed once from the nominal toss plan and held constant across every trial and
+  = 0.674` m, computed once from the nominal toss plan and held constant across every trial and
   every approach. It must *not* be recomputed from the estimate, or the three approaches would
   be aiming at different planes and the comparison would stop being controlled.
 - **Reject unreachable intercepts.** If `time_to_height` has no real root (the fitted `v_z` is
@@ -395,7 +404,7 @@ Four things to get right:
    into `catch.py`) and have `feasibility.py` import them. Do this *before* writing A, not after
    B needs it too. `feasibility.py`'s report output must be unchanged by the move — rerun it and
    diff against the committed `results/catch_feasibility.md`.
-2. **The acceleration limit is mandatory** (§2, deviation 2). `a_max=None` produces motions the
+2. **The acceleration limit is mandatory** (§2, item 2). `a_max=None` produces motions the
    simulated arm cannot track.
 3. **Convert the `Motion` knots to a `PiecewisePolynomial`** for the controller to evaluate.
    `Motion` has piecewise-linear velocity and quadratic position, which is exactly
@@ -430,7 +439,7 @@ finding, and the fix is a better initial guess applied identically to all three 
 
 ### The budget
 
-From `results/catch_feasibility.md` finding 7 and the Week 1 spec's latency parameter:
+From `results/catch_feasibility.md` §1 and the Week 1 spec's latency parameter:
 
 ```
 t_close_command = t_catch - (T_GRIPPER + T_LATENCY)
@@ -443,15 +452,17 @@ so the command goes out about 55 ms before the ball reaches the pinch point.
 
 ### Why timing is a first-order failure mode, not a detail
 
-The ball crosses the catch plane at **2.04 m/s downward**, and the pads are about **2 cm** tall.
-A timing error of 10 ms is 2 cm of ball travel — a whole pad height. Two consequences:
+The ball crosses the catch plane at **2.99 m/s downward**, and the pads are about **2 cm** tall.
+A timing error of 7 ms is 2 cm of ball travel — a whole pad height. Two consequences:
 
 - The 8 ms spread in the gripper's own response (the WSG controller's 50 ms update period means
-  the command lands at an arbitrary phase) is already 1.6 cm of ball travel. We cannot remove it,
-  so it goes in the error budget and the paper.
-- **An error in the estimated `v_z` costs time, not just position.** `dt_catch/dv_z ≈ 0.176` s
+  the command lands at an arbitrary phase) is now 2.4 cm of ball travel, **more than a pad height
+  on its own**. It goes in the error budget and the paper unless A3 can shrink it: the response
+  time repeats by command phase (`results/catch_feasibility.md` §1), so a lead looked up from the
+  phase may work.
+- **An error in the estimated `v_z` costs time, not just position.** `dt_catch/dv_z ≈ 0.192` s
   per m/s at this operating point, so a 0.05 m/s error in fitted vertical velocity moves the
-  arrival by 8.8 ms = 1.8 cm of ball travel. For Approach A that error is frozen at the decision
+  arrival by 9.6 ms = 2.9 cm of ball travel. For Approach A that error is frozen at the decision
   instant. This is a large part of what B should recover, and it is **why the trial record must
   separate horizontal miss from timing error** (§13.1) — otherwise the paper cannot say which
   one A is losing to.
@@ -484,13 +495,14 @@ The proposal:
 t_catch, p_catch = toss.catch_point(toss_plan)   # from the NOMINAL plan, no observations
 ```
 
-and the decision taken at `t_rel = BRAKE` (0.050 s), the earliest moment the arm is free. It
-therefore gets the *most* motion time of the three — which is the point: whatever it loses, it
-loses to not looking, not to being rushed.
+and the decision taken at `t_rel = BRAKE` (0.100 s), the earliest moment the arm is free. It
+therefore gets as much motion time as any of the three — which is the point: whatever it loses,
+it loses to not looking, not to being rushed.
 
 It also gets the best possible nominal: the toss plan is what the robot *commanded*, so the
 baseline is not merely open-loop, it is open-loop with perfect knowledge of the intended toss.
-With `sigma_toss = 0` and no release error, the baseline should catch nearly every time — and
+The real toss lands a repeatable 1.4 cm from that plan, most of the ±1.6 cm tolerance, so calibrate
+that offset out first. Then with `sigma_toss = 0` the baseline should catch nearly every time — and
 that is a **useful self-test of the whole pipeline**, not a boring result. Run it first: if the
 baseline cannot catch a perfectly nominal toss, nothing downstream means anything.
 
@@ -520,23 +532,39 @@ free check that the perturbed toss is within the velocity limits — it raises i
 trial is discarded and recorded as `toss_infeasible` (do not silently resample: a resampled
 distribution is not the distribution the paper reports).
 
+> **Needs a decision: this does not work at the current toss.** `TOSS_SPEED` is the most this pose
+> can do, so most perturbed commands are out of reach and would be discarded (§17, Q8). Number
+> of 300 draws out of reach, with the same σ on all three axes:
+>
+> | Toss speed | Planned peak | Flight | σ = 0.01 | σ = 0.02 | σ = 0.04 | σ = 0.08 |
+> |---|---|---|---|---|---|---|
+> | 2.72 m/s (current) | 1.130 m | 0.575 s | 143 | 162 | 186 | 198 |
+> | 2.64 m/s | 1.109 m | 0.560 s | 0 | 24 | 67 | 125 |
+> | 2.55 m/s | 1.087 m | 0.543 s | 0 | 0 | 18 | 71 |
+> | 2.40 m/s | 1.051 m | 0.515 s | 0 | 0 | 1 | 24 |
+>
+> The two options are to add the noise to the ball's velocity right after release, which keeps the
+> toss at 2.72 m/s and loses nothing to discards, or to toss slower with the method above. 2.55 m/s
+> covers the nominal 0.02 m/s, but the larger σ_lat levels would still lose tosses.
+
 ### Sizing, from the correction envelope
 
-`results/catch_feasibility.md` finding 5 and §3: at 80°, the +x envelope is only 2–5 cm, while
-−x and ±y are 10–40 cm. **+x is the binding direction and the sweep must be sized against it.**
+`results/catch_feasibility.md` finding 7 and §3: at 76.5°, the −y and −x envelopes are about 4–7 cm
+for most of the flight, while +x and +y are 8–50 cm. **−y is the binding direction and the sweep
+must be sized against it.**
 
-- A landing displacement of δx needs δv_x = δx / 0.358 s.
-- The envelope at the decision instant (t = 0.10 s) is 4.4 cm → δv_x of 0.12 m/s is the hard wall.
-- Choose σ_lat so that 2σ of landing displacement stays inside it: σ_lat = 0.02 m/s gives 0.7 cm
-  of 1σ landing shift, 1.4 cm at 2σ, comfortably inside 4.4 cm but comparable to the ±1.6 cm pad
+- A landing displacement of δ needs δv = δ / 0.575 s.
+- The envelope at the decision instant (t = 0.10 s) is 6.3 cm → δv of 0.11 m/s is the hard wall.
+- Choose σ_lat so that 2σ of landing displacement stays inside it: σ_lat = 0.02 m/s gives 1.15 cm
+  of 1σ landing shift, 2.3 cm at 2σ, comfortably inside 6.3 cm but comparable to the ±1.6 cm pad
   clearance — i.e. big enough to matter, small enough to be correctable. **Nominal: 0.02 m/s.**
 
 | Parameter | Nominal | Sweep | 1σ effect at the catch plane |
 |---|---|---|---|
-| σ_lat | 0.02 m/s | {0, 0.01, 0.02, 0.04, 0.08} m/s | 0.36 / 0.72 / 1.4 / 2.9 cm of landing shift |
-| σ_vz | 0.02 m/s | {0, 0.02, 0.05} m/s | 3.5 / 8.8 ms of arrival-time shift = 0.7 / 1.8 cm of ball travel |
+| σ_lat | 0.02 m/s | {0, 0.01, 0.02, 0.04, 0.08} m/s | 0.57 / 1.15 / 2.3 / 4.6 cm of landing shift |
+| σ_vz | 0.02 m/s | {0, 0.02, 0.05} m/s | 3.8 / 9.6 ms of arrival-time shift = 1.15 / 2.9 cm of ball travel |
 
-σ_lat = 0.08 m/s should defeat everything including B (2σ = 5.7 cm > the 4.4 cm envelope), which
+σ_lat = 0.08 m/s should defeat everything including B (2σ = 9.2 cm > the 6.3 cm envelope), which
 is worth having in the sweep: a condition where B stops helping is evidence that the gap we
 measure elsewhere is real and bounded, not an artifact.
 
@@ -614,7 +642,7 @@ latency = 30 ms, position-only):
 | Secondary mode (position+velocity), nominal | 1 | 300 |
 | **Total** | | **4500** |
 
-**Measure the per-trial wall time in Week 3 and put it in `results/`.** The sim is ~2.4 s of
+**Measure the per-trial wall time in Week 3 and put it in `results/`.** The sim is ~2.6 s of
 simulated time at a 1 ms step; headless that is seconds, and B adds solver time on top. Trials
 are independent, so `multiprocessing.Pool` over seeds is the obvious lever — but Drake solvers
 are themselves threaded, so set `OMP_NUM_THREADS=1` in the workers or the pool will fight itself.
@@ -631,16 +659,16 @@ The constraint is `T_WINDOW + T_motion(T_WINDOW) + margin ≤ t_catch`.
 
 | Term | Value | Source |
 |---|---|---|
-| `t_catch` | 0.358 s | §2 |
-| Minimum motion time from rest | 0.166 s | `results/catch_feasibility.md` §2: arrival 0.216 s from a 0.050 s hand-off |
-| Hard upper bound on `T_WINDOW` | ≈ 0.19 s | 0.358 − 0.166 |
-| **Chosen `T_WINDOW`** | **0.10 s** | leaves 0.092 s of margin for solver time, tracking error, and the fact that minimum-time motions saturate the velocity limits |
+| `t_catch` | 0.575 s | §2 |
+| Minimum motion time from rest | 0.410 s | `results/catch_feasibility.md` §2: arrival 0.510 s from a 0.100 s hand-off |
+| Hard upper bound on `T_WINDOW` | ≈ 0.165 s | 0.575 − 0.410 |
+| **Chosen `T_WINDOW`** | **0.10 s** | leaves 0.065 s of margin for solver time, tracking error, and the fact that minimum-time motions saturate the velocity limits |
 
-Longer windows buy accuracy (1σ falls from 3.9 cm at 0.05 s to 1.5 cm at 0.10 s to 0.8 cm at
-0.15 s, position-only) but spend the margin that lets the motion be tracked rather than merely
-planned. 0.10 s is the knee: past it the accuracy gain per millisecond of margin falls off
-sharply. **Run `T_WINDOW ∈ {0.05, 0.10, 0.15}` as a one-off sensitivity check in Week 3** and put
-the three numbers in the paper — "we chose the window with evidence" is worth two sentences.
+Longer windows buy accuracy (1σ falls from 2.5 cm at 0.10 s to 1.4 cm at 0.15 s, position-only)
+but spend the margin that lets the motion be tracked rather than merely planned. A window shorter
+than 0.10 s gains nothing, because the arm is braking until then. **Run
+`T_WINDOW ∈ {0.10, 0.125, 0.15}` as a one-off sensitivity check in Week 3**, expecting failures at
+0.15 s with only 15 ms of margin left, and put the three numbers in the paper — "we chose the window with evidence" is worth two sentences.
 
 Note that the first usable sample is at t = 0.01 s, not t = 0: the observation at the release
 instant is the ball still in the fingers. Start the window at the first sample strictly after
@@ -650,17 +678,18 @@ release, and verify the count is 10, not 11.
 
 | Source | 1σ, per horizontal axis | Note |
 |---|---|---|
-| Estimator (A, frozen at 0.10 s) | **1.5 cm** | `feasibility.prediction_error()` |
-| Toss variability, σ_lat = 0.02 m/s | 0.7 cm | §12 |
-| Arrival timing from σ_vz = 0.02 m/s | 0.7 cm equivalent | 3.5 ms × 2.04 m/s |
-| Gripper response spread | 0.8 cm equivalent | 8 ms × 2.04 m/s, irreducible |
+| Estimator (A, frozen at 0.10 s) | **2.5 cm** | `feasibility.prediction_error()` |
+| Toss variability, σ_lat = 0.02 m/s | 1.15 cm | §12 |
+| Arrival timing from σ_vz = 0.02 m/s | 1.15 cm equivalent | 3.8 ms × 2.99 m/s |
+| Gripper response spread | 1.2 cm equivalent | half of 8 ms × 2.99 m/s, unless A3 shrinks it (§10) |
 | Tracking error | **unmeasured** | Week 1 §7.1–7.2; must be measured in Week 3 |
 | **Tolerance to beat** | **±1.6 cm** | pad clearance |
 
-Summed in quadrature (excluding tracking): ≈ 1.9 cm 1σ against a ±1.6 cm tolerance. **A should be
-marginal at the nominal cell** — roughly a coin flip — which is exactly the operating point that
-makes the A-vs-B comparison informative. If A comes out at 90% or at 5%, the nominal cell is in
-the wrong place and should be moved (by σ_p) before the Week 4 runs, not after.
+Summed in quadrature (excluding tracking): ≈ 3.2 cm 1σ against a ±1.6 cm tolerance. **A should land
+well below a coin flip at the nominal cell**, while a coin flip is the operating point that makes
+the A-vs-B comparison most informative. If A comes out at 90% or at 5%, the nominal cell is in the
+wrong place and should be moved (by σ_p) before the Week 4 runs, not after. Expect to lower it: at
+σ_p = 3 mm the estimator term falls to 1.5 cm and the total to about 2.5 cm.
 
 ### The unmeasured term
 
@@ -669,6 +698,8 @@ controller does not model the held ball, and `control_mode: position_only` deriv
 command from the position command. During the catch the arm is *not* holding the ball, so §7.1
 mostly affects the toss (and shows up as release-velocity error, which the estimator sees and
 corrects for). §7.2 affects the catch directly, since the catch motion saturates joint velocities.
+The toss itself now has numbers: 11 mrad of tracking error at release, and joint speeds overshooting
+by about 1.4% just after it. The catch motion is still unmeasured.
 
 > **Required in Week 3, before any sweep:** log commanded vs. measured joint positions through
 > one catch motion and report the peak pinch-point error. If it is a significant fraction of
@@ -687,6 +718,8 @@ corrects for). §7.2 affects the catch directly, since the catch motion saturate
 | The arm reaches the catch point and the ball lands on the closed fingers | `contact` true, `caught` false, miss ≈ 0 | Trigger timing (§10); this is the failure A3 exists to find |
 | A is too good or too bad at the nominal cell | Catch rate > 85% or < 15% | Move the nominal σ_p before Week 4, not after |
 | Solver nondeterminism breaks reproducibility | Same seed, different CSV | Pin the solver and its options; if SNOPT is nondeterministic across runs, record it as a limitation and report mean ± CI rather than exact reproduction |
+| The catch motion hits the torque limits | `arm_arrival_error` grows; `TossLog.arm_effort` reaches `arm_limits()` | The simulator clips torque silently, as the 0.05 s brake showed. Lower the catch's acceleration limit for all three policies, which spends the 65 ms margin |
+| Gripper timing decides the catch | `contact` true, `caught` false, timing error within the 8 ms spread | Look the lead up by command phase (§10); the ball now covers a pad height in 7 ms |
 | Trials too slow for 4500 runs | Measured per-trial time × 4500 > budget | Parallelize with `OMP_NUM_THREADS=1`; then cut trials per cell, not cells |
 
 ---
@@ -706,7 +739,7 @@ corrects for). §7.2 affects the catch directly, since the catch motion saturate
 
 5. Gripper trigger + latency, and the A3 lead sweep. *(half day)*
 6. **Tracking-error measurement (§14)** and the driver decision. *(half day — do this before 7)*
-7. Toss variability (§12) and its A4 check. *(half day)*
+7. Toss variability (§12) and its A4 check, once §17 Q8 is decided. *(half day)*
 8. `trials.py`: trial record, metrics, seeding, single-cell runner. *(1 day)*
 9. Nominal-cell run, 100 trials, baseline + A. Check A against the §14 prediction; move the
    nominal cell if needed. *(half day)*
@@ -727,7 +760,8 @@ the harness are written costs days.
    paragraph. *Owner: TBD. Needed by: Week 3.*
 2. **Does the driver change to `position_and_torque` / `InverseDynamicsDriver`?** Answered by the
    §14 measurement. *Needed before: the Week 4 sweep.*
-3. **Is the nominal cell at the right σ_p?** Answered by step 9 of §16. *Needed before: Week 4.*
+3. **Is the nominal cell at the right σ_p?** §14 predicts A well below a coin flip at 5 mm. Answered
+   by step 9 of §16. *Needed before: Week 4.*
 4. **Do we run the secondary `POSITION_AND_VELOCITY` sweep?** Budget-dependent; the position-only
    decision in §6.2 means the paper's claim does not require it. *Needed by: Week 4 planning.*
 5. **Is `catch_pose`'s `CATCH_TILT = 25°` still right once the ball may come down off-centre?**
@@ -740,6 +774,9 @@ the harness are written costs days.
 7. **Is 1 ms a small enough plant time step for the catch contact?** Week 1 §9 Q6 left this open
    and there is now a real catch to test it on: re-run one successful trial at 5e-4 and confirm
    the outcome does not change. *Needed by: Week 4.*
+8. **How is toss noise applied?** Velocity noise on the command no longer works at the arm's limit
+   (§12). Add it to the ball's velocity right after release, or toss slower, to 2.55 m/s and a
+   1.087 m peak for the nominal 0.02 m/s? *Owner: TBD. Needed before: step 7 of §16.*
 
 ---
 
@@ -759,6 +796,6 @@ the harness are written costs days.
 - [ ] Trial record contains `predicted_miss` and `arm_arrival_error` separately
 - [ ] Nominal cell: A ≥ 50% catch and ≥ 90% contact at σ_p = 0, σ_toss = 0 (proposal goal, A6)
 - [ ] Per-trial wall time measured and the Week 4 sweep budget written down
-- [ ] `planning/assumptions.md` updated: position-only default, flight time 0.358 s, the
-      acceleration assumption, the driver decision
+- [ ] `planning/assumptions.md` updated: position-only default, the toss at the joint limits with a
+      0.575 s flight, the acceleration assumption, the driver decision
 - [ ] Shared layer frozen and handed to Approach B

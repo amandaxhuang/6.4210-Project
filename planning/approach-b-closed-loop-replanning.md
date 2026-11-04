@@ -7,6 +7,11 @@
 `planning/week1-environment-and-constraints.md`, `results/catch_feasibility.md`
 **Status:** Draft for team review
 
+**Updated 2026-11-04:** all toss numbers now follow the 2.72 m/s toss in
+`results/catch_feasibility.md`. The replan deadline moved to 0.470 s and the longer window nearly
+doubles the solves per trial. Decisions in `approach-a-predict-once.md` (toss noise, nominal σ_p)
+apply here too.
+
 ---
 
 ## 1. Purpose and Scope
@@ -60,7 +65,7 @@ bit-identical:
 | The scene, the toss, the release pose | Different tosses would confound the strategy with the throw |
 | The per-trial seeds (`[SEED_ROOT, trial, 0]` and `[..., 1]`) | Trial *n* must be the same toss and the same noise realization for all three approaches — this is what makes the comparison paired |
 | `BallSensor`, σ_p, σ_v, 100 Hz, position-only default | A sensing difference would be read as a planning difference |
-| The catch plane `Z_CATCH = 0.443` m | Three approaches aiming at three planes is three experiments |
+| The catch plane `Z_CATCH = 0.674` m | Three approaches aiming at three planes is three experiments |
 | `plan_reach`, `N_KNOTS`, `POSITION_TOL`, `CATCH_TILT`, the brake acceleration limit | The motion planner must be the same planner |
 | `T_GRIPPER`, `T_LATENCY`, the close-trigger arithmetic | §10 |
 | The trial record, the success definitions, the sweep cells | Same metrics or no comparison |
@@ -88,16 +93,16 @@ Times are seconds after release. Compare with A's timeline (`approach-a-predict-
 ```
  t=0.000  release; fingers open; ball in free flight
  t=0.000  recursive estimator starts; 100 Hz observations
- t=0.050  brake ends; arm at rest at q_stop
+ t=0.100  brake ends; arm at rest at q_stop
  t=0.100  FIRST SOLVE (identical to Approach A's, from identical data)
           -> plan adopted at t=0.100+tau_compute
  t=0.120  replan: refit, re-intersect, re-solve from the CURRENT COMMANDED state,
  t=0.140  replan: ... warm-started from the previous solution's tail
  t=0.160  replan: ...                 (every REPLAN_PERIOD = 0.02 s)
    ...    each adopted plan updates t_catch, p_catch, and the close-command time
- t=0.280  REPLAN DEADLINE -- the envelope is down to ~2 cm; commit to the last plan
- ~0.30    gripper close command, from the LAST estimate (not the first)
- t=0.358  ball crosses the catch plane
+ t=0.470  REPLAN DEADLINE -- the envelope is down to ~2 cm; commit to the last plan
+ ~0.52    gripper close command, from the LAST estimate (not the first)
+ t=0.575  ball crosses the catch plane
  +0.5 s   catch is scored
 ```
 
@@ -130,7 +135,7 @@ class ReplanPolicy:
     def update(self, t_rel, est, q_cmd, qdot_cmd, plan) -> CatchPlan | None:
         if t_rel < T_FIRST_SOLVE:        # 0.100 s -- same as Approach A
             return None
-        if t_rel > REPLAN_DEADLINE:      # 0.280 s -- see §7.3
+        if t_rel > REPLAN_DEADLINE:      # 0.470 s -- see §7.3
             return None
         if plan is not None and t_rel - self.t_last_solve < REPLAN_PERIOD:
             return None
@@ -147,7 +152,7 @@ its own metrics.
 |---|---|---|
 | `T_FIRST_SOLVE` | 0.100 s | Identical to A's `T_WINDOW`, by definition, not by coincidence — import it |
 | `REPLAN_PERIOD` | 0.020 s (50 Hz) | Set by the solver budget, §11 |
-| `REPLAN_DEADLINE` | 0.280 s | Set by the correction envelope, §7.3 |
+| `REPLAN_DEADLINE` | 0.470 s | Set by the correction envelope, §7.3 |
 | `tau_compute` | measured p95 | §9 |
 | `WARM_START` | `"tail"` | §7.2 |
 
@@ -206,15 +211,17 @@ at the catch point:
 
 | Data up to | A (frozen at 0.10 s) | B (refit) |
 |---|---|---|
-| 0.05 s | — | 3.9 cm |
-| 0.10 s | **1.5 cm** | 1.5 cm |
-| 0.15 s | 1.5 cm | 0.8 cm |
-| 0.20 s | 1.5 cm | 0.5 cm |
-| 0.25 s | 1.5 cm | 0.3 cm |
-| 0.30 s | 1.5 cm | 0.2 cm |
+| 0.05 s | — | 6.6 cm |
+| 0.10 s | **2.5 cm** | 2.5 cm |
+| 0.15 s | 2.5 cm | 1.4 cm |
+| 0.20 s | 2.5 cm | 0.9 cm |
+| 0.25 s | 2.5 cm | 0.6 cm |
+| 0.30 s | 2.5 cm | 0.4 cm |
+| 0.40 s | 2.5 cm | 0.3 cm |
+| 0.45 s | 2.5 cm | 0.2 cm |
 
-Against a ±1.6 cm pad clearance. **This table is the project's hypothesis in numbers**: A sits at
-the edge of the tolerance for the whole flight, while B is inside it by 0.20 s — *provided* the
+Against a ±1.6 cm pad clearance. **This table is the project's hypothesis in numbers**: A sits past
+the edge of the tolerance for the whole flight, while B is inside it by 0.15 s — *provided* the
 arm can still act on what B learns, which is §7.3.
 
 ---
@@ -260,18 +267,22 @@ in the paper.
 
 ### 7.3 The deadline: when replanning stops paying
 
-From `results/catch_feasibility.md` §3, 80°, post-brake hand-off — how far the catch point can
-still be moved toward +x (the binding direction, finding 5) if the new target is learned at `t_c`:
+From `results/catch_feasibility.md` §3, 76.5°, post-brake hand-off — how far the catch point can
+still be moved toward −y (the binding direction, finding 7) if the new target is learned at `t_c`:
 
-| `t_c` (s) | +x envelope | B's 1σ estimate error | Verdict |
+| `t_c` (s) | −y envelope | B's 1σ estimate error | Verdict |
 |---|---|---|---|
-| 0.10 | 4.4 cm | 1.5 cm | Correction is worth far more than the error |
-| 0.15 | 3.7 cm | 0.8 cm | Still paying |
-| 0.20 | 3.1 cm | 0.5 cm | Still paying |
-| 0.25 | 2.3 cm | 0.3 cm | Marginal |
-| 0.30 | 0.9 cm | 0.2 cm | Below the pad clearance; not worth the disturbance |
+| 0.10 | 6.3 cm | 2.5 cm | Correction is worth far more than the error |
+| 0.15 | 5.6 cm | 1.4 cm | Still paying |
+| 0.20 | 5.0 cm | 0.9 cm | Still paying |
+| 0.25 | 4.5 cm | 0.6 cm | Still paying |
+| 0.30 | 4.2 cm | 0.4 cm | Still paying |
+| 0.35 | 4.2 cm | 0.3 cm | Still paying |
+| 0.40 | 4.0 cm | 0.3 cm | Still paying |
+| 0.45 | 2.7 cm | 0.2 cm | Marginal |
+| 0.50 | 1.2 cm | 0.2 cm | Below the pad clearance; not worth the disturbance |
 
-> **`REPLAN_DEADLINE = 0.280 s`**, with the last useful correction around 2 cm — comparable to
+> **`REPLAN_DEADLINE = 0.470 s`**, with the last useful correction around 2 cm — comparable to
 > the ±1.6 cm tolerance, and past it the envelope collapses faster than the estimate improves.
 
 Two refinements worth having:
@@ -279,11 +290,11 @@ Two refinements worth having:
 - **Stop early when the correction is below the noise.** If `‖p_catch_new − p_catch_current‖` is
   under ~2 mm, skip the solve. At late times the estimate barely moves, and a solve that changes
   nothing still costs compute and still perturbs the command. Record `solves_skipped`.
-- **Do not confuse the deadline with the horizon.** Replanning stops at 0.280 s; the *plan* still
-  runs to `t_catch ≈ 0.358 s`. The arm keeps moving after the last replan.
+- **Do not confuse the deadline with the horizon.** Replanning stops at 0.470 s; the *plan* still
+  runs to `t_catch ≈ 0.575 s`. The arm keeps moving after the last replan.
 
-Keep the deadline a configuration value and sweep it ({0.20, 0.28, 0.35} s) as a Week 3
-sensitivity check: "replanning past 0.28 s does not help, and here is the measurement" is a
+Keep the deadline a configuration value and sweep it ({0.35, 0.47, 0.55} s) as a Week 3
+sensitivity check: "replanning past 0.47 s does not help, and here is the measurement" is a
 stronger paper sentence than a chosen constant.
 
 ---
@@ -310,7 +321,7 @@ Three rules:
 
 The acceleration *limit* is only enforced within each solve, so consecutive plans can still
 produce a corner in commanded acceleration. That is acceptable (the arm has no acceleration limit
-in the model anyway — `approach-a-predict-once.md` §2, deviation 2), but it is another reason the §7.3 "skip tiny corrections" rule is worth
+in the model anyway — `approach-a-predict-once.md` §2, item 2), but it is another reason the §7.3 "skip tiny corrections" rule is worth
 having.
 
 ---
@@ -327,7 +338,7 @@ no real system can do, and the A-vs-B gap we report would be partly an artifact 
 Implementation: `CatchController` already stashes an adoption time with each plan
 (`approach-a-predict-once.md` §5.4, step 4). B sets it to `t + tau_compute`; A and the baseline
 set it to `t` — correctly, because A's single solve happens at its decision instant and A's budget
-analysis (`approach-a-predict-once.md` §14) already left 92 ms of margin for it. For strictness, run A with the same
+analysis (`approach-a-predict-once.md` §14) already left 65 ms of margin for it. For strictness, run A with the same
 `tau_compute` applied to its one solve as a Week 3 check; it should change nothing, and confirming
 that is one line in the paper.
 
@@ -349,8 +360,8 @@ as what they are.
 
 ### The arrival time moves too
 
-`approach-a-predict-once.md` §10 established that `dt_catch/dv_z ≈ 0.176` s per m/s, and that the
-ball crosses the catch plane at 2.04 m/s against a 2 cm pad height — so **10 ms of timing error is
+`approach-a-predict-once.md` §10 established that `dt_catch/dv_z ≈ 0.192` s per m/s, and that the
+ball crosses the catch plane at 2.99 m/s against a 2 cm pad height — so **7 ms of timing error is
 a whole pad height.** A freezes its `t_catch` at 0.100 s and inherits that error for the rest of
 the flight. B re-estimates it on every replan, so:
 
@@ -366,9 +377,9 @@ the flight. B re-estimates it on every replan, so:
   amount B's retiming moved the trigger is a direct, isolated measurement of the timing half of
   B's advantage.
 
-**Do not let the deadline hide the trigger.** `REPLAN_DEADLINE = 0.280 s` and the nominal
-`t_close ≈ 0.303 s` (0.358 − 0.055), so the last replan before the deadline sets the final trigger
-time with 23 ms to spare. Check this ordering holds across the sweep; if a faster toss ever puts
+**Do not let the deadline hide the trigger.** `REPLAN_DEADLINE = 0.470 s` and the nominal
+`t_close ≈ 0.520 s` (0.575 − 0.055), so the last replan before the deadline sets the final trigger
+time with 50 ms to spare. Check this ordering holds across the sweep; if a faster toss ever puts
 `t_close` before the deadline, the latch rule above is what keeps it sane.
 
 ---
@@ -379,13 +390,13 @@ time with 23 ms to spare. Check this ordering holds across the sweep; if a faste
 
 | | |
 |---|---|
-| Replan window | 0.100 → 0.280 s = 0.18 s |
-| At 50 Hz (`REPLAN_PERIOD` = 20 ms) | 10 solves per trial |
-| At 200 Hz | 37 solves per trial |
+| Replan window | 0.100 → 0.470 s = 0.37 s |
+| At 50 Hz (`REPLAN_PERIOD` = 20 ms) | 19 solves per trial |
+| At 200 Hz | 75 solves per trial |
 | Trials in the full sweep (B's share) | ~1500 (`approach-a-predict-once.md` §13.4) |
-| At 50 Hz and 15 ms/solve | 150 ms of solver per trial, ~4 min total — fine |
-| At 50 Hz and 200 ms/solve | 2 s of solver per trial, ~50 min — tolerable |
-| At 200 Hz and 200 ms/solve | 7.4 s per trial, ~3 h of solver alone — not fine |
+| At 50 Hz and 15 ms/solve | 285 ms of solver per trial, ~7 min total — fine |
+| At 50 Hz and 200 ms/solve | 3.8 s of solver per trial, ~95 min — tolerable |
+| At 200 Hz and 200 ms/solve | 15 s per trial, ~6 h of solver alone — not fine |
 
 So the decision depends entirely on a number nobody has measured yet. **B6 measures it first**;
 `REPLAN_PERIOD` is chosen after, not before.
@@ -393,8 +404,8 @@ So the decision depends entirely on a number nobody has measured yet. **B6 measu
 ### 11.2 Fallback ladder, in order
 
 1. **Warm start from the previous tail** (§7.2). Expected to be enough.
-2. **Reduce `REPLAN_PERIOD` to 20–40 ms.** 5–10 corrections across a window where the estimate
-   improves from 1.5 cm to 0.3 cm is plenty; the information does not arrive fast enough to
+2. **Reduce `REPLAN_PERIOD` to 20–40 ms.** 9–19 corrections across a window where the estimate
+   improves from 2.5 cm to 0.2 cm is plenty; the information does not arrive fast enough to
    justify 200 Hz anyway. Note that at 100 Hz observations, replanning faster than 100 Hz cannot
    see new data at all — **the sensor rate is a hard ceiling on useful replanning**, and saying so
    in the paper is better than implying we chose 50 Hz for convenience.
@@ -433,14 +444,14 @@ headline bar chart, is what shows the mechanism rather than just the outcome.
 | σ_p | A's frozen 1σ | B's final 1σ | Prediction |
 |---|---|---|---|
 | 0 mm | 0 | 0 | Both near-perfect; **no gap**. The honest control |
-| 2 mm | 0.6 cm | 0.1 cm | Small gap |
-| 5 mm | 1.5 cm | 0.3 cm | **Largest gap** — A is at the tolerance edge, B is well inside |
-| 10 mm | 3.0 cm | 0.6 cm | Large gap; A mostly fails |
-| 20 mm | 6.0 cm | 1.2 cm | A fails; B limited by the 2–4 cm correction envelope, so the gap narrows again |
+| 2 mm | 1.0 cm | 0.1 cm | Small gap |
+| 5 mm | 2.5 cm | 0.2 cm | **Large gap** — A is past the tolerance edge, B is well inside |
+| 10 mm | 5.0 cm | 0.4 cm | **Likely the largest gap**; A mostly fails, B is still well inside |
+| 20 mm | 10.0 cm | 0.8 cm | A fails; B limited by the 4–6 cm correction envelope, so the gap narrows again |
 
 And against toss variability: the gap should grow with σ_lat up to the point where the required
-correction exceeds the envelope (σ_lat ≈ 0.08 m/s, where 2σ of landing shift is 5.7 cm against a
-4.4 cm envelope), then collapse.
+correction exceeds the envelope (σ_lat ≈ 0.08 m/s, where 2σ of landing shift is 9.2 cm against a
+6.3 cm envelope), then collapse.
 
 ### What would falsify it, and what each outcome would mean
 
@@ -465,7 +476,7 @@ correction exceeds the envelope (σ_lat ≈ 0.08 m/s, where 2σ of landing shift
 | Solver lands in different local minima between replans | Large jumps in the planned terminal pose with a tiny target change | Warm start always; compare warm vs. cold (§7.2); if it persists, add a regularizer toward the previous terminal pose and apply the same cost to A's single solve |
 | Replanning chases noise rather than signal | `plan_drift` large but success no better | The §7.3 "skip corrections under 2 mm" rule; consider a covariance-gated update using `est.cov` |
 | B's advantage is an artifact of free compute | Gap collapses when `tau_compute` > 0 | That *is* the result (§9); report both |
-| The deadline is in the wrong place | Deadline sweep shows success still rising at 0.28 s | Move it; it is configuration, and the sweep exists to catch this |
+| The deadline is in the wrong place | Deadline sweep shows success still rising at 0.47 s | Move it; it is configuration, and the sweep exists to catch this |
 | Shared layer drifts | B's diff touches `catch.py` / `trials.py` | §2; the equivalence test catches the rest |
 
 ---
@@ -512,7 +523,7 @@ and both tests take an afternoon.
    "correct at every control step, replan at 50 Hz". *Needed by: Week 3.*
 3. **Should the replan be covariance-gated** — only adopt a new target when the change exceeds the
    estimate's own uncertainty? Principled, and `est.cov` is already carried. May be
-   over-engineering for a 0.18 s window. *Decide in Week 3 from whether `plan_drift` tracks the
+   over-engineering for a 0.37 s window. *Decide in Week 3 from whether `plan_drift` tracks the
    true error or the noise.*
 4. **Do we report `tau_compute = 0` as a headline or an ablation?** §9 argues ablation, with the
    measured value as the headline. *Needed by: Week 4.*
@@ -542,7 +553,7 @@ and both tests take an afternoon.
 - [ ] `tau_compute` configurable, defaulted to measured p95, sweepable (B5)
 - [ ] Close-command trigger latches once issued; `trigger_shift` recorded (§10)
 - [ ] `plan_drift`, `trigger_shift`, `n_solves`, `solve_failures`, solve times in every B trial record
-- [ ] Replan deadline sensitivity run at {0.20, 0.28, 0.35} s
+- [ ] Replan deadline sensitivity run at {0.35, 0.47, 0.55} s
 - [ ] Nominal cell: 100 paired trials, B vs. A vs. baseline, with McNemar's test (B7)
 - [ ] Result checked against §12's predicted shape; any mismatch diagnosed with the §12 decision tree
 - [ ] Success-vs-`plan_drift` figure produced (§11.3)

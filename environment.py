@@ -35,7 +35,7 @@ from utils.viz import HEADLESS, get_meshcat, keep_meshcat_open
 ASSET_DIR = Path(__file__).parent.resolve() / "assets"
 BODY = "base_link"
 
-# Floor box (x, y, z) in meters - top surface at z = 0, flush with  iiwa's base.  
+# Floor box (x, y, z) in meters - top surface at z = 0, flush with  iiwa's base.
 FLOOR_SIZE = (4.0, 4.0, 0.1)
 
 # Ball size and mass.  BALL_RADIUS must satisfy two gripper limits: 0.0125 m <= BALL_RADIUS <= 0.0575 m
@@ -44,7 +44,7 @@ FLOOR_SIZE = (4.0, 4.0, 0.1)
 #   - the closed command must not be negative: FINGER_CLOSED >= 0,
 #     so BALL_RADIUS >= 0.0125 m.
 BALL_RADIUS = 0.04
-BALL_MASS = 0.1
+BALL_MASS = 0.01
 PINCH = np.array([0.0, 0.108, 0.0]) # Point between WSG fingertap pads, in gripper body frame G
 FINGER_CONTACT = 2 * BALL_RADIUS - 0.005 # Finger opening (dist betwen 2 finger joints) - each pad's inner face is 2.5 mm farther out than its joint
 FINGER_SQUEEZE = 0.02 # 2 cm past contact to squeeze the ball
@@ -52,21 +52,21 @@ FINGER_CLOSED = FINGER_CONTACT - FINGER_SQUEEZE
 
 # Robot: iiwa14 joined to world origin, with a WSG gripper joined to its last link.
 # default_joint_positions is the pose the arm starts in and is held at.
-# Currently: the underhand start of toss.py's default toss: hand low and close
-# to the robot, palm up (gripper about 32 degrees from vertical), with the
-# pinch point at about [0.59, 0, 0.37] m.
+# Currently: the underhand start of toss.py's default toss: hand drawn back and
+# low (gripper about 107 degrees from vertical), with the pinch point at about
+# [0.59, 0.14, 0.18] m.
 ROBOT = """directives:
 - add_model:
     name: iiwa
     file: package://drake_models/iiwa_description/sdf/iiwa14_no_collision.sdf
     default_joint_positions:
-        iiwa_joint_1: [-2.242]
-        iiwa_joint_2: [-1.557]
-        iiwa_joint_3: [2.186]
-        iiwa_joint_4: [-1.582]
-        iiwa_joint_5: [-1.39]
-        iiwa_joint_6: [1.664]
-        iiwa_joint_7: [-0.963]
+        iiwa_joint_1: [-2.251]
+        iiwa_joint_2: [-1.286]
+        iiwa_joint_3: [-0.601]
+        iiwa_joint_4: [1.039]
+        iiwa_joint_5: [2.647]
+        iiwa_joint_6: [1.604]
+        iiwa_joint_7: [-1.389]
 - add_weld:
     parent: world
     child: iiwa::iiwa_link_0
@@ -139,7 +139,7 @@ def write_sdf(name: str, geometry: str, center: str, mass: float, inertia, rgba)
 def floor_directive() -> str:
     """A box welded down with its top surface at z = 0.
     The box's link frame is at its top surface, and the shape is shifted down
-    by half its thickness. 
+    by half its thickness.
     """
     sx, sy, sz = FLOOR_SIZE
     m = 20.0
@@ -165,7 +165,7 @@ def floor_directive() -> str:
 def ball_directive() -> str:
     """A free sphere, body frame at its center.
     No starting pose is set: where ball belongs depends on where gripper is,
-    so place_ball_in_gripper moves it into the fingers in the simulation's context.  
+    so place_ball_in_gripper moves it into the fingers in the simulation's context.
     Until then it sits at the world origin.
     """
     # Solid sphere: I = 2/5 m r^2 about every axis through its center.
@@ -222,8 +222,8 @@ def build_system():
 
 def place_ball_in_gripper(system, context):
     """Put the ball's center at the gripper's pinch point.
-    
-    Called after creating the Simulator and before advancing it.  
+
+    Called after creating the Simulator and before advancing it.
     Ball's orientation is left as identity: sphere looks + behaves same either way.
     """
     plant = system.GetSubsystemByName("station").GetSubsystemByName("plant")
@@ -237,7 +237,7 @@ def place_ball_in_gripper(system, context):
 def run(duration: float = 3.0):
     """Simulate the held ball for `duration` seconds and print where it ends.
 
-    If the grip works, the ball ends where it started, about 0.37 m up.  A
+    If the grip works, the ball ends where it started, about 0.18 m up.  A
     final height near BALL_RADIUS (0.04 m) means it was dropped onto the floor.
     """
     system = build_system()
