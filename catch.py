@@ -85,6 +85,7 @@ NOMINAL_OFFSET = np.array([0.01375, -0.00180, 0.0])  # m
 # catch window, though it barely changes noisy catch rates: results/catch_timing.md.
 GRIP_FORCE_MIN = 1.0
 HOLD_TIME = 0.5  # s the ball must stay gripped to count as caught
+PAD_HALF_SIZE = 0.01  # m; the fingertip pads are 2 cm square
 FINGER_STOPPED_SPEED = 0.02  # m/s of finger opening rate
 FINGER_SETTLED_ROWS = 10  # simulator steps it must stay below that, to count as stopped
 
@@ -110,6 +111,12 @@ def measure_nominal_offset() -> tuple[float, np.ndarray]:
     fly = toss.free_flight(plan, log)
     t, p = toss.catch_point(plan)
     return fly.t_down - plan.t_release - t, fly.p_down - p
+
+
+def ball_on_pad(in_hand: np.ndarray) -> bool:
+    """Whether the ball's center is on the pads rather than off their edges, from
+    its position relative to the pinch point in the gripper frame."""
+    return bool(abs(in_hand[1]) <= PAD_HALF_SIZE and abs(in_hand[2]) <= PAD_HALF_SIZE)
 
 
 def toss_velocity_noise(trial: int, sigma_lat: float, sigma_vz: float) -> np.ndarray:
@@ -275,14 +282,15 @@ class CatchController(LeafSystem):
     same smooth trajectories it would from a TrajectorySource.  The policy and
     the fit are per-run objects: a simulator only ever runs this forward.
 
-    latency delays the finger command by a fixed time, for every policy.
+    latency delays the finger command by a fixed time, for every policy.  The
+    trigger allows for it, unless assumed_latency says it allows for another value.
     lead overrides how long before t_catch the decision to close is taken.
     pad_lead is how long before t_catch the pads should reach the ball's width.
     compute_latency delays when a plan may first be acted on.
     """
 
     def __init__(self, toss_plan, policy, fit, latency=T_LATENCY, lead=None, compute_latency=0.0,
-                 pad_lead=PAD_LEAD):
+                 pad_lead=PAD_LEAD, assumed_latency=None):
         LeafSystem.__init__(self)
         self.set_name("catch_controller")
         self.toss_plan = toss_plan
@@ -292,6 +300,7 @@ class CatchController(LeafSystem):
         self.lead = lead
         self.compute_latency = compute_latency
         self.pad_lead = pad_lead
+        self.assumed_latency = latency if assumed_latency is None else assumed_latency
         self.t_close = np.inf  # the latest decision to close, for the trial record
         self.t_last_observation = -np.inf
         self.plans: list[CatchPlan] = []  # every plan the policy returned
@@ -357,7 +366,7 @@ class CatchController(LeafSystem):
         the fingers are already moving.  A failed solve never closes."""
         if t >= t_close or not plan.solve_ok:
             return t_close
-        self.t_close = close_command_time(plan.t_catch, self.lead, self.latency, self.pad_lead)
+        self.t_close = close_command_time(plan.t_catch, self.lead, self.assumed_latency, self.pad_lead)
         return self.t_close
 
     def _calc_arm(self, context, output):
@@ -424,7 +433,7 @@ def shared_kinematics() -> Kinematics:
 
 
 def build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode, latency, lead, compute_latency,
-                       pad_lead):
+                       pad_lead, assumed_latency):
     """The scene with a sensor and a CatchController wired in, extending
     toss.add_toss_station.  Returns (diagram, toss plan, controller)."""
     builder = DiagramBuilder()
@@ -439,7 +448,8 @@ def build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode, late
 
     policy = policy_factory(CatchPlanner(shared_kinematics(), plan))
     fit = BallisticFit(plan.t_release, sigma_p, sigma_v)
-    controller = builder.AddSystem(CatchController(plan, policy, fit, latency, lead, compute_latency, pad_lead))
+    controller = builder.AddSystem(CatchController(plan, policy, fit, latency, lead, compute_latency, pad_lead,
+                                                   assumed_latency))
     builder.Connect(sensor.GetOutputPort("observation"), controller.GetInputPort("observation"))
     builder.Connect(controller.GetOutputPort("iiwa_position"), station.GetInputPort("iiwa.position"))
     builder.Connect(controller.GetOutputPort("wsg_position"), station.GetInputPort("wsg.position"))
@@ -448,14 +458,15 @@ def build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode, late
 
 def simulate_catch(policy_factory, *, sigma_p=sensing.SIGMA_P, sigma_v=sensing.SIGMA_V,
                    obs_mode=sensing.POSITION_ONLY, latency=T_LATENCY, lead=None,
-                   compute_latency=0.0, pad_lead=PAD_LEAD, sigma_lat=0.0, sigma_vz=0.0, trial=0) -> CatchRun:
+                   compute_latency=0.0, pad_lead=PAD_LEAD, assumed_latency=None, sigma_lat=0.0, sigma_vz=0.0,
+                   trial=0) -> CatchRun:
     """Simulate one toss and catch.  policy_factory takes a CatchPlanner and
     returns a policy, so a policy class will do.  The toss and observation noise
     depend only on the trial number, so a trial is the same under every policy."""
     rng_obs = np.random.default_rng([SEED_ROOT, trial, 1])
     noise = toss_velocity_noise(trial, sigma_lat, sigma_vz)
     system, plan, controller = build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode,
-                                                  latency, lead, compute_latency, pad_lead)
+                                                  latency, lead, compute_latency, pad_lead, assumed_latency)
     toss.draw_planned_flight(plan)
     simulator = Simulator(system)
     context = simulator.get_mutable_context()

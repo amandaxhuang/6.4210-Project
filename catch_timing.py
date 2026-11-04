@@ -111,7 +111,7 @@ def run_noisy(args):
     o, plan = run.outcome, run.plans[-1]
     return dict(sigma_p=sigma_p, lead=lead, pad_lead=pad_lead, trial=trial, caught=o.caught, contact=o.contact,
                 solve_ok=plan.solve_ok, rejected=plan.intercept_rejected, timing=o.timing_error,
-                predicted=o.predicted_miss, arrival=o.arm_arrival_error, on_pad=abs(o.end_in_hand[1]) <= 0.01)
+                predicted=o.predicted_miss, arrival=o.arm_arrival_error, on_pad=catch.ball_on_pad(o.end_in_hand))
 
 
 def report_response(pool):
@@ -189,7 +189,7 @@ def run_threshold_lead(lead):
 def run_threshold_trial(args):
     sigma_p, trial = args
     run = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=sigma_p, trial=trial)
-    return dict(sigma_p=sigma_p, holds=holds_by_threshold(run), on_pad=abs(run.outcome.end_in_hand[1]) <= 0.01)
+    return dict(sigma_p=sigma_p, holds=holds_by_threshold(run), on_pad=catch.ball_on_pad(run.outcome.end_in_hand))
 
 
 def report_threshold(pool):
@@ -254,7 +254,7 @@ def run_first_look(args):
     run = catch.simulate_catch(catch.POLICIES[policy], sigma_p=sigma_p, sigma_lat=sigma_lat, sigma_vz=SIGMA_VZ, trial=trial)
     o, plan = run.outcome, run.plans[-1]
     return dict(key=(policy, sigma_p, sigma_lat), caught=o.caught, contact=o.contact, solve_ok=plan.solve_ok,
-                on_pad=abs(o.end_in_hand[1]) <= 0.01, predicted=o.predicted_miss, arrival=o.arm_arrival_error)
+                on_pad=catch.ball_on_pad(o.end_in_hand), predicted=o.predicted_miss, arrival=o.arm_arrival_error)
 
 
 def report_first_look(pool):
@@ -280,7 +280,7 @@ def report_trigger(pool):
     print("## 5. Timing the close on noisy tosses\n")
     print(f"Approach A, {N_TRIALS} trials per row, the same noise in every row.  'Lookup' aims the pads "
           "that long before t_catch through the measured gripper response; 'fixed' is the spec's "
-          "constant lead.  'On pad' counts catches with the ball's center within 1 cm of the pad's.\n")
+          "constant lead.  'On pad' counts catches with the ball's center on the 2 cm square pad, both ways.\n")
     settings = [(lead, None) for lead in FIXED_LEADS] + [(None, pad) for pad in PAD_LEADS]
     jobs = [(sigma, lead, pad, trial) for sigma in NOISE_LEVELS for lead, pad in settings
             for trial in range(N_TRIALS)]

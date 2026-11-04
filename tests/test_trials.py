@@ -1,0 +1,212 @@
+"""The trial harness: the trial record, the CSV, and the summary (spec deliverable A5)."""
+
+import math
+from pathlib import Path
+import tempfile
+import unittest
+
+import numpy as np
+
+import catch
+import toss
+import trials
+
+
+class WilsonTest(unittest.TestCase):
+    def test_contains_the_observed_rate(self):
+        low, high = trials.wilson(50, 100)
+        self.assertLess(low, 0.5)
+        self.assertGreater(high, 0.5)
+        self.assertAlmostEqual(low, 0.404, delta=0.002)
+        self.assertAlmostEqual(high, 0.596, delta=0.002)
+
+    def test_stays_inside_zero_and_one(self):
+        self.assertEqual(trials.wilson(0, 100)[0], 0.0)
+        self.assertEqual(trials.wilson(100, 100)[1], 1.0)
+
+    def test_no_trials_says_nothing(self):
+        self.assertEqual(trials.wilson(0, 0), (0.0, 1.0))
+
+
+class McNemarTest(unittest.TestCase):
+    def test_identical_outcomes_show_no_difference(self):
+        self.assertEqual(trials.mcnemar([True, False, True], [True, False, True]), (0, 0, 1.0))
+
+    def test_all_disagreements_one_way(self):
+        only_a, only_b, p = trials.mcnemar([True] * 10, [False] * 10)
+        self.assertEqual((only_a, only_b), (10, 0))
+        self.assertAlmostEqual(p, 2 * 0.5**10)
+
+    def test_balanced_disagreements_show_no_difference(self):
+        self.assertEqual(trials.mcnemar([True, False], [False, True])[2], 1.0)
+
+
+class RunTrialTest(unittest.TestCase):
+    """A perfect sensor, so the toss noise is the only error."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.noisy = trials.TrialConfig("predict_once", trial=5, sigma_p=0.0, sigma_lat=0.02, sigma_vz=0.02)
+        cls.a = trials.run_trial(cls.noisy)
+        cls.quiet = trials.run_trial(trials.TrialConfig("predict_once", trial=5, sigma_p=0.0, sigma_lat=0.0, sigma_vz=0.0))
+        cls.baseline = trials.run_trial(trials.TrialConfig("open_loop", trial=5, sigma_p=0.0, sigma_lat=0.02, sigma_vz=0.02))
+
+    def test_the_record_names_its_cell(self):
+        self.assertEqual(self.a.approach, "predict_once")
+        self.assertEqual(self.a.trial, 5)
+        self.assertEqual(self.a.seed, catch.SEED_ROOT)
+        self.assertEqual(self.a.sigma_lat, 0.02)
+        self.assertEqual(self.a.obs_mode, "position_only")
+        self.assertEqual(self.a.latency, catch.T_LATENCY)
+
+    def test_the_record_separates_estimation_from_tracking(self):
+        self.assertLess(self.a.predicted_miss, 0.002)  # a perfect sensor predicts it
+        self.assertGreater(self.a.arm_arrival_error, 0.002)  # the arm still lags
+        self.assertGreater(self.baseline.predicted_miss, 0.002)  # not looking misses the toss noise
+
+    def test_the_record_measures_what_the_toss_really_did(self):
+        moved = np.array([self.a.v_release_true_x - self.quiet.v_release_true_x,
+                          self.a.v_release_true_y - self.quiet.v_release_true_y,
+                          self.a.v_release_true_z - self.quiet.v_release_true_z])
+        np.testing.assert_allclose(moved, catch.toss_velocity_noise(5, 0.02, 0.02), atol=1e-6)
+        self.assertAlmostEqual(self.quiet.p_release_true_z, 0.771, delta=0.005)
+
+    def test_the_fairness_audit_is_recorded(self):
+        self.assertEqual(self.a.n_solves, 1)
+        self.assertEqual(self.a.plans_adopted, 1)
+        self.assertGreater(self.a.policy_calls, 100)
+        self.assertTrue(self.a.solve_ok)
+        self.assertFalse(self.a.fit_rank_deficient)
+        self.assertFalse(self.a.intercept_rejected)
+        self.assertGreater(self.a.solve_time, 0.0)
+        self.assertGreater(self.a.wall_time, self.a.solve_time)
+
+    def test_both_catch_definitions_are_recorded(self):
+        self.assertEqual(self.a.caught_on_pad, self.a.caught and catch.ball_on_pad(
+            np.array([0.0, self.a.end_fingers, self.a.end_across])))
+        self.assertEqual(self.quiet.caught_on_pad, False)  # the default noiseless catch is a perch
+        self.assertTrue(self.quiet.caught)
+
+
+class SweepTest(unittest.TestCase):
+    def test_parallel_trials_match_and_keep_their_order(self):
+        configs = [trials.TrialConfig("predict_once", trial=t, sigma_p=0.002) for t in (3, 1)]
+        swept = trials.sweep(configs, n_workers=2)
+        self.assertEqual([r.trial for r in swept], [3, 1])
+        alone = trials.run_trial(configs[0])
+        self.assertAlmostEqual(swept[0].miss_horizontal, alone.miss_horizontal, delta=1e-9)
+        self.assertEqual(swept[0].caught, alone.caught)
+
+
+def record(**fields):
+    defaults = dict(approach="predict_once", trial=0, seed=catch.SEED_ROOT, sigma_p=0.005, sigma_v=0.05,
+                    obs_mode="position_only", sigma_lat=0.02, sigma_vz=0.02, latency=0.03, caught=True,
+                    caught_on_pad=False, contact=True, hold_time=1.0, miss_horizontal=0.01, miss_vertical=0.0,
+                    miss_closing=0.0, miss_fingers=0.0, miss_across=0.0, end_fingers=0.015, end_across=0.0,
+                    timing_error=0.001, predicted_miss=0.02, arm_arrival_error=0.006, solve_ok=True, solve_time=0.3,
+                    wall_time=3.0, n_solves=1, policy_calls=320, plans_adopted=1, fit_rank_deficient=False,
+                    intercept_rejected=False, p_release_true_x=0.8, p_release_true_y=0.0, p_release_true_z=0.77,
+                    v_release_true_x=-0.33, v_release_true_y=-0.53, v_release_true_z=2.65)
+    return trials.TrialResult(**{**defaults, **fields})
+
+
+class CsvTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = Path(self.dir.name) / "a.csv"
+        self.other = Path(self.dir.name) / "b.csv"
+
+    def test_a_record_survives_the_round_trip(self):
+        trials.write_csv([record(miss_vertical=math.nan)], self.path)
+        row = trials.read_csv(self.path)[0]
+        self.assertEqual(row["approach"], "predict_once")
+        self.assertEqual(row["caught"], "True")
+        self.assertEqual(float(row["predicted_miss"]), 0.02)
+        self.assertTrue(math.isnan(float(row["miss_vertical"])))
+
+    def test_the_same_results_compare_equal(self):
+        trials.write_csv([record(), record(trial=1)], self.path)
+        trials.write_csv([record(), record(trial=1)], self.other)
+        self.assertEqual(trials.csv_differences(self.path, self.other), [])
+
+    def test_differences_below_the_tolerance_are_ignored(self):
+        trials.write_csv([record(predicted_miss=0.02)], self.path)
+        trials.write_csv([record(predicted_miss=0.02 + 1e-12)], self.other)
+        self.assertEqual(trials.csv_differences(self.path, self.other), [])
+
+    def test_differences_above_the_tolerance_are_reported(self):
+        trials.write_csv([record(predicted_miss=0.02)], self.path)
+        trials.write_csv([record(predicted_miss=0.021)], self.other)
+        self.assertEqual(len(trials.csv_differences(self.path, self.other)), 1)
+
+    def test_a_changed_outcome_is_reported(self):
+        trials.write_csv([record(caught=True)], self.path)
+        trials.write_csv([record(caught=False)], self.other)
+        self.assertEqual(len(trials.csv_differences(self.path, self.other)), 1)
+
+    def test_wall_clock_columns_are_ignored(self):
+        trials.write_csv([record(solve_time=0.3, wall_time=3.0)], self.path)
+        trials.write_csv([record(solve_time=0.5, wall_time=4.0)], self.other)
+        self.assertEqual(trials.csv_differences(self.path, self.other), [])
+
+    def test_a_missing_row_is_reported(self):
+        trials.write_csv([record(), record(trial=1)], self.path)
+        trials.write_csv([record()], self.other)
+        self.assertTrue(trials.csv_differences(self.path, self.other))
+
+
+class SummaryTest(unittest.TestCase):
+    def results(self):
+        a = [record(trial=t, caught=t < 6, caught_on_pad=t < 2, predicted_miss=0.03) for t in range(10)]
+        baseline = [record(approach="open_loop", sigma_p=0.0, trial=t, caught=t < 3, predicted_miss=0.01) for t in range(10)]
+        return a + baseline
+
+    def test_cells_count_their_outcomes(self):
+        cells = {(c.approach, c.sigma_p): c for c in trials.summarize(self.results())}
+        cell = cells[("predict_once", 0.005)]
+        self.assertEqual((cell.n, cell.caught, cell.on_pad, cell.contact, cell.no_plan), (10, 6, 2, 10, 0))
+        self.assertAlmostEqual(cell.predicted_median, 0.03)
+
+    def test_a_cell_is_paired_with_the_baseline_at_its_toss_noise(self):
+        cells = {(c.approach, c.sigma_p): c for c in trials.summarize(self.results())}
+        cell = cells[("predict_once", 0.005)]
+        self.assertEqual((cell.only_this, cell.only_baseline), (3, 0))
+        self.assertAlmostEqual(cell.paired_p, 0.25)
+        self.assertIsNone(cells[("open_loop", 0.0)].paired_p)
+
+    def test_the_generated_part_replaces_only_what_is_below_the_marker(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "report.md"
+            trials.write_report(self.results(), path)
+            self.assertIn(trials.GENERATED_MARKER, path.read_text())
+            path.write_text("interpretation\n\n" + path.read_text())
+            trials.write_report(self.results()[:10], path)
+            text = path.read_text()
+            self.assertTrue(text.startswith("interpretation"))
+            self.assertEqual(text.count(trials.GENERATED_MARKER), 1)
+            self.assertNotIn("open_loop", text.split(trials.GENERATED_MARKER)[1].replace("baseline", ""))
+
+
+class CatchHelpersTest(unittest.TestCase):
+    def test_on_the_pad_means_within_the_square_both_ways(self):
+        self.assertTrue(catch.ball_on_pad(np.array([0.03, 0.005, -0.005])))
+        self.assertFalse(catch.ball_on_pad(np.array([0.0, 0.015, 0.0])))
+        self.assertFalse(catch.ball_on_pad(np.array([0.0, 0.0, -0.015])))
+
+    def test_the_baseline_does_not_depend_on_the_sensor(self):
+        a = catch.simulate_catch(catch.OpenLoopPolicy, sigma_p=0.0, trial=3)
+        b = catch.simulate_catch(catch.OpenLoopPolicy, sigma_p=0.02, trial=3)
+        np.testing.assert_allclose(a.log.ball_p, b.log.ball_p, atol=1e-9)
+
+    def test_latency_is_compensated_unless_the_trigger_assumes_another(self):
+        nominal = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.0, latency=0.03)
+        known = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.0, latency=0.05)
+        unknown = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.0, latency=0.05, assumed_latency=0.03)
+        fingers = nominal.controller.t_close + 0.03
+        self.assertAlmostEqual(known.controller.t_close + 0.05, fingers)  # still moves at the same time
+        self.assertAlmostEqual(unknown.controller.t_close + 0.05, fingers + 0.02)  # 20 ms late
+
+
+if __name__ == "__main__":
+    unittest.main()
