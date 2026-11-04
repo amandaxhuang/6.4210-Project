@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -170,6 +171,31 @@ class CsvTest(unittest.TestCase):
         trials.write_csv([record(predicted_miss=0.021)], self.other)
         self.assertEqual(len(trials.csv_differences(self.path, self.other)), 1)
 
+    def test_what_the_fit_saw_compares_tightly(self):
+        trials.write_csv([record(predicted_miss=0.02)], self.path)
+        trials.write_csv([record(predicted_miss=0.02 + 1e-6)], self.other)
+        self.assertEqual(len(trials.csv_differences(self.path, self.other)), 1)
+
+    def test_the_arm_may_differ_a_little_after_the_solve(self):
+        trials.write_csv([record(miss_fingers=0.01, arm_arrival_error=0.006)], self.path)
+        trials.write_csv([record(miss_fingers=0.01 + 2e-4, arm_arrival_error=0.006 + 2e-4)], self.other)
+        self.assertEqual(trials.csv_differences(self.path, self.other), [])
+
+    def test_the_arm_differing_by_more_than_that_is_reported(self):
+        trials.write_csv([record(miss_fingers=0.01)], self.path)
+        trials.write_csv([record(miss_fingers=0.01 + 2e-3)], self.other)
+        self.assertEqual(len(trials.csv_differences(self.path, self.other)), 1)
+
+    def test_a_dropped_ball_may_come_to_rest_elsewhere(self):
+        trials.write_csv([record(caught=False, end_across=-1.0)], self.path)
+        trials.write_csv([record(caught=False, end_across=-1.012)], self.other)
+        self.assertEqual(trials.csv_differences(self.path, self.other), [])
+
+    def test_a_held_ball_has_to_end_in_the_same_place(self):
+        trials.write_csv([record(caught=True, end_across=0.01)], self.path)
+        trials.write_csv([record(caught=True, end_across=0.012)], self.other)
+        self.assertEqual(len(trials.csv_differences(self.path, self.other)), 1)
+
     def test_a_changed_outcome_is_reported(self):
         trials.write_csv([record(caught=True)], self.path)
         trials.write_csv([record(caught=False)], self.other)
@@ -184,6 +210,33 @@ class CsvTest(unittest.TestCase):
         trials.write_csv([record(), record(trial=1)], self.path)
         trials.write_csv([record()], self.other)
         self.assertTrue(trials.csv_differences(self.path, self.other))
+
+
+class RepeatCheckTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.saved = Path(self.dir.name) / "saved.csv"
+        self.config = trials.TrialConfig("predict_once", trial=4, sigma_p=0.003, sigma_v=0.05, t_window=0.15)
+
+    def rerun(self, **fields):
+        return mock.patch.object(trials, "sweep", return_value=[record(trial=4, sigma_p=0.003, t_window=0.15, **fields)])
+
+    def test_only_the_rows_it_ran_are_compared(self):
+        other_cell = record(trial=4, sigma_p=0.005, t_window=0.15, caught=False)
+        trials.write_csv([other_cell, record(trial=4, sigma_p=0.003, t_window=0.15)], self.saved)
+        with self.rerun():
+            self.assertEqual(trials.repeat_check([self.config], self.saved), [])
+
+    def test_a_changed_outcome_is_reported(self):
+        trials.write_csv([record(trial=4, sigma_p=0.003, t_window=0.15)], self.saved)
+        with self.rerun(caught=False):
+            self.assertEqual(len(trials.repeat_check([self.config], self.saved)), 1)
+
+    def test_a_row_missing_from_the_saved_file_is_reported(self):
+        trials.write_csv([record(trial=5, sigma_p=0.003, t_window=0.15)], self.saved)
+        with self.rerun():
+            self.assertEqual(trials.repeat_check([self.config], self.saved), ["0 rows against 1"])
 
 
 class SummaryTest(unittest.TestCase):
