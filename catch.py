@@ -44,8 +44,19 @@ T_MIN_MOTION = 0.41  # s; the fastest the arm reaches the catch from rest (resul
 T_MAX_CATCH = 1.0  # s after release; an intercept later than this is not believed
 DECISION_DEADLINE = 0.165  # s after release; past this no motion from rest can arrive in time
 
-T_GRIPPER = 0.025  # s from the close command reaching the fingers to the pads at ball width
 T_LATENCY = 0.030  # s from deciding to close to the command reaching the fingers
+PAD_LEAD = 0.003  # s before t_catch that the pads should reach the ball's width (results/catch_timing.md)
+
+# From the close command reaching the fingers to the pads at ball width (ms), by
+# how many ms after a WSG controller update (every 50 ms) the command lands.
+# Measured by catch_timing.py.
+GRIPPER_RESPONSE_MS = [
+    20, 28, 28, 28, 28, 28, 28, 28, 28, 28,
+    28, 28, 28, 28, 28, 28, 28, 28, 28, 28,
+    28, 28, 28, 28, 28, 28, 28, 28, 27, 27,
+    27, 27, 26, 26, 26, 25, 25, 25, 24, 24,
+    24, 23, 23, 23, 22, 22, 22, 21, 21, 21,
+]
 
 # The controller runs at 200 Hz, one plant step after each multiple of 5 ms.
 # Everything that happens at one instant sees the state from before that instant,
@@ -105,10 +116,31 @@ def intercept(est: Estimate, z_catch: float, t_rel: float) -> tuple[float, np.nd
     return t, toss.ballistic_position(est.p0, est.v0, t)
 
 
-def close_command_time(t_catch: float, lead: float | None = None) -> float:
-    """When to decide to close so the pads reach the ball at t_catch.  Both times
-    are simulation times.  lead defaults to T_GRIPPER + T_LATENCY."""
-    return t_catch - (T_GRIPPER + T_LATENCY if lead is None else lead)
+def finger_command_time(t_catch: float, pad_lead: float = PAD_LEAD) -> float:
+    """When the close command should reach the fingers for the pads to reach the
+    ball's width pad_lead before t_catch, looked up from the measured response.
+    Both are simulation times.
+
+    The pads can't arrive 20 to 29 ms after a controller update: a command just
+    before an update arrives at 20 ms, and one just after it at 29 ms.  A target in
+    that gap goes to the nearer side.  A command landing exactly on an update could
+    fall on either side by rounding, so none does.
+    """
+    target = (t_catch - pad_lead) * 1000
+    last = int(np.ceil(target))
+    commands = [k for k in range(last - 60, last + 1) if k % 50 != 0]
+    best = min(commands, key=lambda k: abs(k + GRIPPER_RESPONSE_MS[k % 50] - target))
+    return (best - 0.5) / 1000  # half a step early, so the step at ms `best` sees it
+
+
+def close_command_time(t_catch: float, lead: float | None = None, latency: float = T_LATENCY,
+                       pad_lead: float = PAD_LEAD) -> float:
+    """When to decide to close, for a ball crossing the catch plane at t_catch: a
+    latency before the fingers should get the command, or lead before t_catch if
+    that is given.  Both are simulation times."""
+    if lead is not None:
+        return t_catch - lead
+    return finger_command_time(t_catch, pad_lead) - latency
 
 
 def motion_to_trajectory(motion: Motion, t_release: float) -> PiecewisePolynomial:
@@ -228,10 +260,12 @@ class CatchController(LeafSystem):
 
     latency delays the finger command by a fixed time, for every policy.
     lead overrides how long before t_catch the decision to close is taken.
+    pad_lead is how long before t_catch the pads should reach the ball's width.
     compute_latency delays when a plan may first be acted on.
     """
 
-    def __init__(self, toss_plan, policy, fit, latency=T_LATENCY, lead=None, compute_latency=0.0):
+    def __init__(self, toss_plan, policy, fit, latency=T_LATENCY, lead=None, compute_latency=0.0,
+                 pad_lead=PAD_LEAD):
         LeafSystem.__init__(self)
         self.set_name("catch_controller")
         self.toss_plan = toss_plan
@@ -240,6 +274,8 @@ class CatchController(LeafSystem):
         self.latency = latency
         self.lead = lead
         self.compute_latency = compute_latency
+        self.pad_lead = pad_lead
+        self.t_close = np.inf  # the latest decision to close, for the trial record
         self.t_last_observation = -np.inf
         self.plans: list[CatchPlan] = []  # every plan the policy returned
         self.policy_calls = 0
@@ -304,7 +340,8 @@ class CatchController(LeafSystem):
         the fingers are already moving.  A failed solve never closes."""
         if t >= t_close or not plan.solve_ok:
             return t_close
-        return close_command_time(plan.t_catch, self.lead)
+        self.t_close = close_command_time(plan.t_catch, self.lead, self.latency, self.pad_lead)
+        return self.t_close
 
     def _calc_arm(self, context, output):
         t = context.get_time()
@@ -341,8 +378,9 @@ class CatchOutcome:
     timing_error: float = np.nan  # s: real crossing of the catch plane - planned
     miss_horizontal: float = np.nan  # m: ball to pinch point at that crossing, horizontally
     miss_vertical: float = np.nan  # m: pinch point height error at that crossing
-    miss_in_hand: np.ndarray = field(default_factory=lambda: np.full(3, np.nan))
     # ball - pinch point in the gripper frame, m: closing axis, along the fingers, across the pad
+    miss_in_hand: np.ndarray = field(default_factory=lambda: np.full(3, np.nan))  # at that crossing
+    end_in_hand: np.ndarray = field(default_factory=lambda: np.full(3, np.nan))  # at the end of the run
     predicted_miss: float = np.nan  # m: |planned catch point - real crossing|, the estimator alone
     arm_arrival_error: float = np.nan  # m: |pinch at t_catch - planned catch point|, the tracker alone
 
@@ -367,7 +405,8 @@ def shared_kinematics() -> Kinematics:
     return Kinematics()
 
 
-def build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode, latency, lead, compute_latency):
+def build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode, latency, lead, compute_latency,
+                       pad_lead):
     """The scene with a sensor and a CatchController wired in, extending
     toss.add_toss_station.  Returns (diagram, toss plan, controller)."""
     builder = DiagramBuilder()
@@ -382,7 +421,7 @@ def build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode, late
 
     policy = policy_factory(CatchPlanner(shared_kinematics(), plan))
     fit = BallisticFit(plan.t_release, sigma_p, sigma_v)
-    controller = builder.AddSystem(CatchController(plan, policy, fit, latency, lead, compute_latency))
+    controller = builder.AddSystem(CatchController(plan, policy, fit, latency, lead, compute_latency, pad_lead))
     builder.Connect(sensor.GetOutputPort("observation"), controller.GetInputPort("observation"))
     builder.Connect(controller.GetOutputPort("iiwa_position"), station.GetInputPort("iiwa.position"))
     builder.Connect(controller.GetOutputPort("wsg_position"), station.GetInputPort("wsg.position"))
@@ -391,13 +430,13 @@ def build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode, late
 
 def simulate_catch(policy_factory, *, sigma_p=sensing.SIGMA_P, sigma_v=sensing.SIGMA_V,
                    obs_mode=sensing.POSITION_ONLY, latency=T_LATENCY, lead=None,
-                   compute_latency=0.0, trial=0) -> CatchRun:
+                   compute_latency=0.0, pad_lead=PAD_LEAD, trial=0) -> CatchRun:
     """Simulate one toss and catch.  policy_factory takes a CatchPlanner and
     returns a policy, so a policy class will do.  The observation noise depends
     only on the trial number, so a trial sees the same noise under every policy."""
     rng_obs = np.random.default_rng([SEED_ROOT, trial, 1])
     system, plan, controller = build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode,
-                                                  latency, lead, compute_latency)
+                                                  latency, lead, compute_latency, pad_lead)
     toss.draw_planned_flight(plan)
     simulator = Simulator(system)
     context = simulator.get_mutable_context()
@@ -470,6 +509,7 @@ def score(plan: toss.TossPlan, log: CatchLog, controller: CatchController) -> Ca
     gripper = [i for i in range(fly.i_free, len(log.t))
                if any(name.startswith("wsg::") for name in log.touching[i])]
     outcome = CatchOutcome(False, bool(gripper))
+    outcome.end_in_hand = log.R_WG[-1].T @ (log.ball_p[-1] - log.pinch[-1])
     if gripper:
         outcome.t_first_contact = log.t[gripper[0]]
 
@@ -490,8 +530,7 @@ def score(plan: toss.TossPlan, log: CatchLog, controller: CatchController) -> Ca
     # command reaches them.
     if not chosen.solve_ok:
         return outcome
-    t_command = close_command_time(chosen.t_catch, controller.lead) + controller.latency
-    closing = np.flatnonzero(log.t >= t_command)
+    closing = np.flatnonzero(log.t >= controller.t_close + controller.latency)
     moved = closing[log.finger_rate[closing] < -FINGER_STOPPED_SPEED]
     if len(moved) == 0:
         return outcome
@@ -528,7 +567,7 @@ def report(run: CatchRun) -> None:
         print(f"first contact {o.t_first_contact - run.toss_plan.t_release:.4f} s after release")
     if o.t_fingers_stopped is not None:
         print(f"fingers stopped {o.t_fingers_stopped - run.toss_plan.t_release:.4f} s after release")
-    print(f"ball ends at {np.round(run.log.ball_p[-1], 3)}")
+    print(f"ball ends at {np.round(run.log.ball_p[-1], 3)} m; in hand {np.round(o.end_in_hand * 1e2, 2)} cm")
 
 
 POLICIES = {"open_loop": OpenLoopPolicy, "predict_once": PredictOncePolicy}

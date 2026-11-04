@@ -6,6 +6,7 @@ import numpy as np
 
 import catch
 import environment as env
+import feasibility
 import planning_core
 import sensing
 import toss
@@ -54,12 +55,47 @@ class InterceptTest(unittest.TestCase):
         self.assertIsNone(catch.intercept(estimate(self.P0, [0, 0, 6.0]), 0.674, 0.1))
 
 
-class CloseTriggerTest(unittest.TestCase):
-    def test_default_lead_covers_the_gripper_and_the_latency(self):
-        self.assertAlmostEqual(catch.close_command_time(1.575), 1.575 - 0.055)
+def pads_arrive(t_command):
+    """When the pads reach ball width, from the measured response."""
+    k = round(t_command * 1000 + 0.5)  # the first simulator step at or after the command
+    return (k + catch.GRIPPER_RESPONSE_MS[k % 50]) / 1000
 
-    def test_lead_can_be_overridden(self):
+
+class CloseTriggerTest(unittest.TestCase):
+    def test_an_explicit_lead_is_used_as_given(self):
         self.assertAlmostEqual(catch.close_command_time(1.575, lead=0.04), 1.535)
+
+    def test_the_pads_arrive_at_the_target_time(self):
+        """Away from the gap in the response, the lookup lands within a step of the target."""
+        for ms_after_update in (30, 35, 40, 45, 50, 60, 69):
+            target = 1.5 + ms_after_update / 1000
+            t_catch = target + catch.PAD_LEAD
+            arrival = pads_arrive(catch.finger_command_time(t_catch))
+            self.assertLessEqual(abs(arrival - target), 0.001, f"{ms_after_update} ms after an update")
+
+    def test_targets_in_the_gap_go_to_the_nearer_side(self):
+        """Pads can't arrive 20 to 29 ms after an update: a command just before one
+        arrives at 20 ms and one just after it at 29 ms."""
+        for ms_after_update, expected in ((21, 20), (23, 20), (26, 29), (28, 29)):
+            target = 1.5 + ms_after_update / 1000
+            arrival = pads_arrive(catch.finger_command_time(target + catch.PAD_LEAD))
+            self.assertAlmostEqual(arrival, 1.5 + expected / 1000, delta=0.0011)
+
+    def test_arrival_never_runs_backward(self):
+        arrivals = [pads_arrive(catch.finger_command_time(t))
+                    for t in np.arange(1.40, 1.70, 0.001)]
+        self.assertGreaterEqual(np.diff(arrivals).min(), -1e-9)
+
+    def test_the_decision_comes_a_latency_before_the_fingers(self):
+        t_catch = 1.575
+        self.assertAlmostEqual(catch.close_command_time(t_catch, latency=0.02),
+                               catch.finger_command_time(t_catch) - 0.02)
+
+    def test_the_response_table_is_current(self):
+        """If this fails the gripper changed: re-measure with catch_timing.py."""
+        for k in (0, 10, 30, 40, 49):
+            measured = feasibility.measure_close(0.300 + k / 1000)["contact"]
+            self.assertAlmostEqual(measured * 1000, catch.GRIPPER_RESPONSE_MS[k], delta=1.0, msg=f"phase {k}")
 
 
 class PolicyTest(unittest.TestCase):
