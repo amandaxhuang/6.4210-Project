@@ -34,7 +34,7 @@ import toss
 N_WORKERS = 7
 LEADS = [l / 1000 for l in range(50, 91)]  # s before t_catch, including the latency
 OFFSETS = [o / 1000 for o in range(-40, 41, 5)]  # m of deliberate aim error
-OFFSET_LEADS = [0.055, 0.058, 0.062, 0.066]  # s
+OFFSET_LEADS = [0.055, 0.056, 0.058, 0.062, 0.066]  # s; 55 is the last on the late side of the gap
 # Approach A on noisy tosses, by how the close is timed: a fixed lead, or a pad lead
 # looked up through the gripper's response.
 NOISE_LEVELS = [0.002, 0.005]  # m
@@ -142,7 +142,7 @@ def report_offsets(pool):
     i = np.searchsorted(nominal.log.t, nominal.plans[-1].t_catch)
     R = nominal.log.R_WG[i]
     tilt = np.degrees(np.arccos(np.clip(R[2, 1], -1, 1)))
-    v = nominal.log.ball_v[i - 15]  # just before the first contact
+    v = nominal.log.ball_v[np.searchsorted(nominal.log.t, nominal.plans[-1].t_catch - 0.02)]  # before any contact
     off_axis = np.degrees(np.arccos(np.clip(-v @ R[:, 1] / np.linalg.norm(v), -1, 1)))
     print(f"At the nominal catch the gripper is {tilt:.1f} deg from up, and the ball comes in "
           f"{off_axis:.1f} deg off the finger axis.\n")
@@ -191,35 +191,36 @@ def report_trigger(pool):
 def report_tracking(pool=None):
     print("## 4. Tracking through a catch motion\n")
     run = catch.simulate_catch(catch.OpenLoopPolicy, sigma_p=0.0)
-    log, plan = run.log, run.plans[-1]
+    log, plan, t_release = run.log, run.plans[-1], run.toss_plan.t_release
     kin = catch.shared_kinematics()
-    commanded = np.array([kin.pinch(q) for q in log.q_cmd])
-    error = np.linalg.norm(log.pinch - commanded, axis=1)
-    t0, t1 = plan.q_traj.start_time(), plan.t_catch
-    during = (log.t >= t0) & (log.t <= t1)
+    error = np.linalg.norm(log.pinch - np.array([kin.pinch(q) for q in log.q_cmd]), axis=1)
     v_max, effort_max = toss.arm_limits(run.plant)
-    speed = np.abs(log.arm_v[during]).max(axis=0) / v_max
-    effort = np.abs(log.arm_effort[during]).max(axis=0) / effort_max
-    i_catch = np.searchsorted(log.t, t1)
-    joint_error = np.abs(log.arm_q[during] - log.q_cmd[during]).max(axis=0)
+    during = (log.t >= plan.q_traj.start_time()) & (log.t <= plan.t_catch)
 
-    # How much of the error is the arm running late on the same path?
-    shifts = np.arange(0.0, 0.05, 0.001)
-    residual = [np.linalg.norm(log.pinch[during]
-                               - np.array([kin.pinch(catch._at(t - s, log.t, log.q_cmd)) for t in log.t[during]]),
-                               axis=1).max() for s in shifts]
-    best = int(np.argmin(residual))
-    print(f"- Peak pinch-point error during the motion: {100 * error[during].max():.2f} cm "
-          f"(at {log.t[during][np.argmax(error[during])] - run.toss_plan.t_release:.3f} s after release)")
-    print(f"- At t_catch: {100 * error[i_catch]:.2f} cm from the command, and "
-          f"{100 * run.outcome.arm_arrival_error:.2f} cm from the planned catch point")
-    for ms in (10, 20, 50, 100):
-        i = np.searchsorted(log.t, t1 + ms / 1000)
-        print(f"- {ms} ms after t_catch: {100 * error[i]:.2f} cm")
-    print(f"- If the arm is taken as running late on the commanded path, the best fit is {1e3 * shifts[best]:.0f} ms, "
-          f"which leaves at most {100 * residual[best]:.2f} cm")
-    print(f"- Peak joint error (mrad): {np.round(1e3 * joint_error, 1)}")
-    print(f"- Peak joint speed: {np.round(speed, 3)} of limit; peak torque: {np.round(effort, 3)} of limit")
+    print("The nominal catch, from the arm's measured state and its commanded one.\n")
+    print("| s after release | pinch point vs command (cm) | joint 6 error (mrad) | joint 6 torque / limit | fastest joint / limit |")
+    print("|---|---|---|---|---|")
+    moments = [("0.101 (hand-off)", 0.101), ("0.150", 0.150), ("0.200", 0.200), ("0.300", 0.300), ("0.400", 0.400),
+               ("0.500", 0.500), (f"{plan.t_catch - t_release:.3f} (t_catch)", plan.t_catch - t_release),
+               ("0.625", 0.625), ("0.650", 0.650), ("0.700", 0.700), ("0.800", 0.800)]
+    for name, t in moments:
+        i = np.searchsorted(log.t, t_release + t)
+        print(f"| {name} | {100 * error[i]:.2f} | {1e3 * (log.q_cmd[i, 5] - log.arm_q[i, 5]):+.1f} "
+              f"| {log.arm_effort[i, 5] / effort_max[5]:+.2f} | {np.abs(log.arm_v[i] / v_max).max():.2f} |")
+    print()
+
+    effort = np.abs(log.arm_effort[during]) / effort_max
+    saturated = log.t[during][effort[:, 5] >= 0.99] - t_release
+    ts = np.linspace(plan.q_traj.start_time(), plan.t_catch, 400)
+    planned = np.array([plan.q_traj.EvalDerivative(t, 2).ravel() for t in ts])
+    a_max = catch.accel_limits(kin)["brake"]
+    print(f"- Arm arrival error: {100 * run.outcome.arm_arrival_error:.2f} cm from the planned catch point")
+    print(f"- Joint 6 at 99% of its torque limit for {len(saturated)} simulator steps, "
+          f"{saturated.min():.3f} to {saturated.max():.3f} s after release; no other joint gets there "
+          f"(next highest {np.delete(effort.max(axis=0), 5).max():.2f})")
+    print(f"- Peak joint speed: {np.round(np.abs(log.arm_v[during]).max(axis=0) / v_max, 3)} of limit")
+    print(f"- Planned peak acceleration: {np.round(np.abs(planned).max(axis=0) / a_max, 2)} of the limit; "
+          f"joint 6 still decelerating at {abs(planned[-1, 5]):.1f} rad/s^2 on arrival")
     print()
 
 

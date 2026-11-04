@@ -12,6 +12,13 @@
 doubles the solves per trial. Decisions in `approach-a-predict-once.md` (toss noise, nominal σ_p)
 apply here too.
 
+**Implementation notes, 2026-11-04.** From building the shared layer, see `approach-a-predict-once.md`. §10's
+`T_GRIPPER` is gone: use `catch.close_command_time`, which looks up the gripper's response by command phase. §6.3's
+accuracy table counts the sample at release, which the fit excludes, so A's figure at 0.10 s is 2.87 cm rather than
+2.5 cm, and B's early figures are similarly optimistic. B3's "identical" has to mean within a tolerance, because
+Drake repeats to about 1e-12 m rather than bit for bit. A policy gets the commanded state as the spec says, and
+`CatchController` already takes `compute_latency`.
+
 ---
 
 ## 1. Purpose and Scope

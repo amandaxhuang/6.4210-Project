@@ -13,6 +13,21 @@
 decision: how toss noise is applied (§12), the nominal σ_p (§14), and gripper timing, which is now
 tighter than the pad height (§10).
 
+**Implementation notes, 2026-11-04.** Steps 1 to 6 of §16 are built on branch `approach-a`. Measuring them
+changed a few things below, which are left as written for the record. The evidence is in
+`results/catch_timing.md` and `planning/assumptions.md`.
+
+- **The close trigger replaces §10's arithmetic.** `T_GRIPPER` is gone. The trigger looks up the gripper's
+  response by command phase and aims the pads 3 ms before the ball (`catch.close_command_time`).
+- **A's prediction error at 0.10 s is 2.87 cm, not 2.5 cm**, with a measured 1σ timing error of about 11 ms.
+  §14 excludes the sample at release, but `prediction_error()` counts it. A1 is tested on the same 10 samples.
+  §14's error budget grows accordingly.
+- **The ball's real tolerances differ from §2's.** Sideways tolerance depends on the close timing, and the
+  timing window is about 22 ms rather than 7 ms, but much of it holds the ball above the pads rather than
+  between them. §13.3 counts that as a catch, which needs a team decision. See `results/catch_timing.md`.
+- **"Bit-identical" (A4, A5) isn't achievable.** Drake repeats to about 1e-12 m, so compare within a tolerance.
+- **Q2 is answered:** the driver stays `position_only`.
+
 ---
 
 ## 1. Purpose and Scope
@@ -782,20 +797,20 @@ the harness are written costs days.
 
 ## 18. Acceptance Checklist
 
-- [ ] `plan_reach` and friends moved out of `feasibility.py`; `feasibility.py` output unchanged
-- [ ] `sensing.BallSensor` publishes at 100 Hz, one noise draw per sample, seeded per trial
-- [ ] `BallisticFit` matches `feasibility.prediction_error()` within 10% over 1000 draws (A1)
+- [x] `plan_reach` and friends moved out of `feasibility.py`; `feasibility.py` output unchanged
+- [x] `sensing.BallSensor` publishes at 100 Hz, one noise draw per sample, seeded per trial
+- [x] `BallisticFit` matches `feasibility.prediction_error()` within 10% over 1000 draws (A1)
 - [ ] `CatchController` runs all three policies through one code path; `policy_calls` recorded
-- [ ] Baseline catches a nominal, noiseless toss in Meshcat (§11 self-test)
-- [ ] `PredictOncePolicy` catches a nominal, noiseless toss
-- [ ] Close-trigger lead sweep peaks within 10 ms of the §10 arithmetic (A3)
-- [ ] Tracking error through a catch motion measured and written up; driver decision made (§14)
+- [x] Baseline catches a nominal, noiseless toss in Meshcat (§11 self-test)
+- [x] `PredictOncePolicy` catches a nominal, noiseless toss
+- [x] Close-trigger lead sweep peaks within 10 ms of the §10 arithmetic (A3)
+- [x] Tracking error through a catch motion measured and written up; driver decision made (§14)
 - [ ] Toss variability verified against commanded σ (A4)
 - [ ] `trials.py` runs 100 seeded trials headless and writes `results/approach_a.csv`
 - [ ] Re-running the same seeds reproduces the CSV
 - [ ] Trial record contains `predicted_miss` and `arm_arrival_error` separately
 - [ ] Nominal cell: A ≥ 50% catch and ≥ 90% contact at σ_p = 0, σ_toss = 0 (proposal goal, A6)
 - [ ] Per-trial wall time measured and the Week 4 sweep budget written down
-- [ ] `planning/assumptions.md` updated: position-only default, the toss at the joint limits with a
+- [x] `planning/assumptions.md` updated: position-only default, the toss at the joint limits with a
       0.575 s flight, the acceleration assumption, the driver decision
 - [ ] Shared layer frozen and handed to Approach B
