@@ -125,7 +125,7 @@ class SweepTest(unittest.TestCase):
         swept = trials.sweep(configs, n_workers=2)
         self.assertEqual([r.trial for r in swept], [3, 1])
         alone = trials.run_trial(configs[0])
-        self.assertAlmostEqual(swept[0].miss_horizontal, alone.miss_horizontal, delta=1e-9)
+        self.assertAlmostEqual(swept[0].miss_horizontal, alone.miss_horizontal, delta=trials.SAME_AFTER_SOLVE)
         self.assertEqual(swept[0].caught, alone.caught)
 
 

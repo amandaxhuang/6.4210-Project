@@ -67,8 +67,9 @@ weren't tried. Evidence: `results/catch_timing.md`.
   no controller or solver, differing by up to about 1e-12 m. The source is inside Drake's simulation and wasn't
   pinned down further: it isn't the floating-point mode, and it doesn't need ball contact.
 - **The solver magnifies that.** SNOPT gives exactly the same answer for exactly the same inputs. But moving the
-  target by as little as 1e-14 s can send it to a different solution, up to 1 mrad away along the path. The fit
-  repeats only to about 1e-13, so this happens on some re-runs.
+  target by as little as 1e-14 s can send it to a different solution, 1 to 5 mrad away along the path, though the end of
+  the motion stays pinned. The fit repeats only to about 1e-13, so this happens on some re-runs, even with no noise at
+  all. The baseline has no fit, and a noiseless baseline repeated exactly in 5 re-runs.
 
 Six cells of the grid were run twice, 600 trials in all:
 
@@ -88,7 +89,9 @@ A trial sitting right on the edge of an outcome could still flip. None did in 60
 trials at 95% confidence, small against the roughly ±10 points of a 100-trial cell. Rounding the target before the solve
 might remove most of the spread, but it wasn't tried.
 
-- Tests compare within 1e-9, not for equality. They use cases the solver doesn't affect, or the tolerances above.
-- A4's "bit-identical" can't be met as worded; "identical within 1e-9" can.
+- Tests compare within 1e-9 up to the solve, and with the tolerances above after it. An earlier version compared
+  Approach A's whole run at 1e-9 and passed or failed at random.
+- A4's "bit-identical" holds within 1e-9 for the flight and for the whole baseline run. It can't hold for Approach A's
+  arm after the solve.
 - A5's "reproduces the CSV exactly" can't either; the table above is what it means here.
 - The spec's risk table anticipated this: report means with confidence intervals, which the results do.
