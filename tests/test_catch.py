@@ -417,6 +417,23 @@ class SelfTest(unittest.TestCase):
         self.assertTrue(run.outcome.caught, run.outcome)
         self.assertTrue(run.outcome.contact, run.outcome)
 
+    def test_a_catch_motion_stays_within_the_plan_speed_limit(self):
+        plan = catch.simulate_catch(catch.OpenLoopPolicy, sigma_p=0.0).plans[-1]
+        v_max = catch.shared_kinematics().v_max
+        speeds = [np.abs(plan.q_traj.EvalDerivative(t, 1).ravel()) / v_max
+                  for t in np.linspace(plan.q_traj.start_time(), plan.t_catch, 400)]
+        self.assertLessEqual(np.max(speeds), catch.PLAN_SPEED_LIMIT + 1e-6)
+
+    def test_the_arm_stays_within_its_rating_on_a_noiseless_catch(self):
+        run = catch.simulate_catch(catch.OpenLoopPolicy, sigma_p=0.0)
+        self.assertLess(run.peak_speed, 1.0)
+        self.assertGreater(run.peak_speed, catch.PLAN_SPEED_LIMIT)  # it does overshoot the plan
+
+    def test_a_run_with_no_motion_has_no_peak_speed(self):
+        run = catch.simulate_catch(lambda planner: catch.PredictOncePolicy(planner, 0.15), sigma_p=0.0)
+        self.assertFalse(run.plans[-1].solve_ok)  # 0.15 s leaves too little time at this limit
+        self.assertTrue(np.isnan(run.peak_speed))
+
     def test_identical_runs_give_identical_records(self):
         a = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.005, trial=11)
         b = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.005, trial=11)

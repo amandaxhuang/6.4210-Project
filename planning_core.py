@@ -99,15 +99,16 @@ def initial_guess(kin, q0, v0, t0, T, p_target) -> Motion:
                   np.array([curve.EvalDerivative(ti, 1).ravel() for ti in t]))
 
 
-def plan_reach(kin, plan, q0, v0, t0, T, p_target, a_max, direction=None, guess=None):
+def plan_reach(kin, plan, q0, v0, t0, T, p_target, a_max, direction=None, guess=None, speed_margin=toss.VELOCITY_MARGIN):
     """A motion from (q0, v0) at t0 (s after release) that stops at t0 + T with
     the pinch point at p_target + delta * direction and the gripper within
     CATCH_TILT of up, keeping the pinch point at or below the ball throughout.
 
     With no direction, delta is 0 and the smoothest such motion is returned.
     With a direction, delta is made as large as possible.  a_max is a per-joint
-    acceleration limit (rad/s^2), or None for velocity limits only.  Returns a
-    Motion, or None if the solver finds none.
+    acceleration limit (rad/s^2), or None for velocity limits only.  speed_margin
+    is the fraction of each joint's rated speed it may use.  Returns a Motion, or
+    None if the solver finds none.
     """
     n, h = N_KNOTS, T / N_KNOTS
     t = t0 + h * np.arange(n + 1)
@@ -121,7 +122,7 @@ def plan_reach(kin, plan, q0, v0, t0, T, p_target, a_max, direction=None, guess=
     prog.AddBoundingBoxConstraint(q0, q0, q[0])
     prog.AddBoundingBoxConstraint(v0, v0, v[0])
     prog.AddBoundingBoxConstraint(0, 0, v[n])
-    v_lim = toss.VELOCITY_MARGIN * kin.v_max
+    v_lim = speed_margin * kin.v_max
     for k in range(n):
         prog.AddLinearEqualityConstraint(q[k + 1] - q[k] - h / 2 * (v[k] + v[k + 1]), np.zeros(7))
         prog.AddBoundingBoxConstraint(-v_lim, v_lim, v[k + 1])

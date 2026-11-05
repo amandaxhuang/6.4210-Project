@@ -49,8 +49,10 @@ from pydrake.all import (
 
 import environment as env
 from planning_core import Kinematics, accel_limits, plan_reach
-from sensing import OBS_RATE, SIGMA_P, SIGMA_V  # the prediction-error column's observation model
+from sensing import OBS_RATE, SIGMA_V  # the prediction-error column's observation model
 import toss
+
+SIGMA_P = 0.005  # m, per axis; this report's sensor, the spec's nominal when it was written
 
 BISECT_STEPS = 11  # minimum-time search resolution: 1 s / 2^11, about 0.5 ms
 
@@ -158,19 +160,19 @@ def report_close():
 # ---------------------------------------------------------------------------
 
 
-def min_time(kin, plan, q0, v0, t0, p_target, a_max, t_max=1.0):
+def min_time(kin, plan, q0, v0, t0, p_target, a_max, t_max=1.0, speed_margin=toss.VELOCITY_MARGIN):
     """Shortest T for which plan_reach finds a motion, by bisection.  Returns
     (T, motion), or (inf, None) if none is found even at t_max."""
-    best = plan_reach(kin, plan, q0, v0, t0, t_max, p_target, a_max)
+    best = plan_reach(kin, plan, q0, v0, t0, t_max, p_target, a_max, speed_margin=speed_margin)
     if best is None:
         return np.inf, None
     lo, hi = 0.0, t_max
     for _ in range(BISECT_STEPS):
         mid = (lo + hi) / 2
         motion = plan_reach(kin, plan, q0, v0, t0, mid, p_target, a_max,
-                            guess=best.stretched(mid))
+                            guess=best.stretched(mid), speed_margin=speed_margin)
         if motion is None:
-            motion = plan_reach(kin, plan, q0, v0, t0, mid, p_target, a_max)
+            motion = plan_reach(kin, plan, q0, v0, t0, mid, p_target, a_max, speed_margin=speed_margin)
         if motion is None:
             lo = mid
         else:

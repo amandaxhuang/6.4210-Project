@@ -16,12 +16,13 @@
 9. Observation window (spec section 14).  Approach A with a longer window.
 10. Gripper tilt (spec Q5).  Whether a tighter limit is reachable, and whether it helps.
 11. Time step (spec Q7).  Whether catches change at half the plant time step.
+12. Tracking at the nominal cell, where Approach A's motion has less time than in 4.
 
 The sweeps in 2 and 3 run the open-loop baseline on a noiseless toss, so that the
 only error is the one being swept.
 
     HEADLESS=1 python catch_timing.py [response lead offsets tracking trigger threshold toss_noise first_look
-                                       window tilt time_step]
+                                       window tilt time_step tracking_nominal]
 """
 
 import multiprocessing
@@ -38,6 +39,7 @@ import catch
 import environment as env
 import feasibility
 import toss
+import trials
 
 N_WORKERS = 7
 LEADS = [l / 1000 for l in range(50, 91)]  # s before t_catch, including the latency
@@ -54,12 +56,15 @@ THRESHOLD_LEADS = [l / 1000 for l in (56, 62, 68, 71, 72, 73, 75, 78, 80, 83, 85
 TOSS_NOISE_CELLS = [(0.01, 0.0), (0.02, 0.0), (0.04, 0.0), (0.0, 0.02), (0.0, 0.05), (0.02, 0.02)]  # m/s: lateral, vertical
 N_TOSSES = 100
 SPREAD_TOLERANCE = 0.15  # spec deliverable A4
-SIGMA_VZ = 0.02  # m/s; the spec's nominal
-FIRST_LOOK_LATERAL = [0.02, 0.04, 0.08]  # m/s, the first the spec's nominal
+SIGMA_VZ = 0.02  # m/s; nominal
+FIRST_LOOK_LATERAL = [0.02, 0.04, 0.08]  # m/s, the first the spec's original nominal
 FIRST_LOOK_SENSOR = [0.002, 0.005]  # m
 WINDOWS = [0.10, 0.125, 0.15, 0.165]  # s; the last is spec section 14's hard limit
 TILTS = [15.0, 20.0, 25.0]  # degrees
 TILT_SIGMA_P = 0.002  # m
+# Approach A's window here, unless a section varies it, whichever window the nominal cell uses.
+WINDOW = 0.10  # s
+NOMINAL = trials.TrialConfig("predict_once")
 TIME_STEPS = [0.001, 0.0005]  # s
 N_TIME_STEP_TRIALS = 30
 
@@ -113,9 +118,16 @@ def run_offset(args):
                 in_hand=run.outcome.miss_in_hand)
 
 
+def predict_once(planner):
+    return catch.PredictOncePolicy(planner, WINDOW)
+
+
+POLICIES = {**catch.POLICIES, "predict_once": predict_once}
+
+
 def run_noisy(args):
     sigma_p, lead, pad_lead, trial = args
-    run = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=sigma_p, lead=lead,
+    run = catch.simulate_catch(predict_once, sigma_p=sigma_p, lead=lead,
                                pad_lead=catch.PAD_LEAD if pad_lead is None else pad_lead, trial=trial)
     o, plan = run.outcome, run.plans[-1]
     return dict(sigma_p=sigma_p, lead=lead, pad_lead=pad_lead, trial=trial, caught=o.caught, contact=o.contact,
@@ -197,7 +209,7 @@ def run_threshold_lead(lead):
 
 def run_threshold_trial(args):
     sigma_p, trial = args
-    run = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=sigma_p, trial=trial)
+    run = catch.simulate_catch(predict_once, sigma_p=sigma_p, trial=trial)
     return dict(sigma_p=sigma_p, holds=holds_by_threshold(run), on_pad=catch.ball_on_pad(run.outcome.end_in_hand))
 
 
@@ -260,7 +272,7 @@ def report_toss_noise(pool):
 
 def run_first_look(args):
     policy, sigma_p, sigma_lat, trial = args
-    run = catch.simulate_catch(catch.POLICIES[policy], sigma_p=sigma_p, sigma_lat=sigma_lat, sigma_vz=SIGMA_VZ, trial=trial)
+    run = catch.simulate_catch(POLICIES[policy], sigma_p=sigma_p, sigma_lat=sigma_lat, sigma_vz=SIGMA_VZ, trial=trial)
     o, plan = run.outcome, run.plans[-1]
     return dict(key=(policy, sigma_p, sigma_lat), caught=o.caught, contact=o.contact, solve_ok=plan.solve_ok,
                 on_pad=catch.ball_on_pad(o.end_in_hand), predicted=o.predicted_miss, arrival=o.arm_arrival_error)
@@ -328,8 +340,8 @@ def run_tilt(args):
     saved = toss.CATCH_TILT
     toss.CATCH_TILT = tilt
     try:
-        run = catch.simulate_catch(catch.PredictOncePolicy, **noisy_kwargs(sigma_p, trial)) if sigma_p is not None \
-            else catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.0)
+        run = catch.simulate_catch(predict_once, **noisy_kwargs(sigma_p, trial)) if sigma_p is not None \
+            else catch.simulate_catch(predict_once, sigma_p=0.0)
     finally:
         toss.CATCH_TILT = saved
     o, plan = run.outcome, run.plans[-1]
@@ -357,7 +369,8 @@ def report_tilt(pool):
         saved = toss.CATCH_TILT
         toss.CATCH_TILT = tilt
         try:
-            T, _ = feasibility.min_time(kin, plan, q_stop, np.zeros(7), toss.BRAKE, nominal.p_catch, a_max)
+            T, _ = feasibility.min_time(kin, plan, q_stop, np.zeros(7), toss.BRAKE, nominal.p_catch, a_max,
+                                        speed_margin=catch.PLAN_SPEED_LIMIT)
         finally:
             toss.CATCH_TILT = saved
         q, r = quiet[tilt], [x for x in noisy if x["key"][0] == tilt]
@@ -379,7 +392,7 @@ def run_time_step(args):
 
     env.make_scenario = scenario
     try:
-        run = catch.simulate_catch(catch.PredictOncePolicy, **noisy_kwargs(TILT_SIGMA_P, trial))
+        run = catch.simulate_catch(predict_once, **noisy_kwargs(TILT_SIGMA_P, trial))
     finally:
         env.make_scenario = original
     o = run.outcome
@@ -427,21 +440,17 @@ def report_trigger(pool):
     print()
 
 
-def report_tracking(pool=None):
-    print("## 4. Tracking through a catch motion\n")
-    run = catch.simulate_catch(catch.OpenLoopPolicy, sigma_p=0.0)
+def print_tracking(run, moments):
     log, plan, t_release = run.log, run.plans[-1], run.toss_plan.t_release
     kin = catch.shared_kinematics()
     error = np.linalg.norm(log.pinch - np.array([kin.pinch(q) for q in log.q_cmd]), axis=1)
     v_max, effort_max = toss.arm_limits(run.plant)
     during = (log.t >= plan.q_traj.start_time()) & (log.t <= plan.t_catch)
 
-    print("The nominal catch, from the arm's measured state and its commanded one.\n")
     print("| s after release | pinch point vs command (cm) | joint 6 error (mrad) | joint 6 torque / limit | fastest joint / limit |")
     print("|---|---|---|---|---|")
-    moments = [("0.101 (hand-off)", 0.101), ("0.150", 0.150), ("0.200", 0.200), ("0.300", 0.300), ("0.400", 0.400),
-               ("0.500", 0.500), (f"{plan.t_catch - t_release:.3f} (t_catch)", plan.t_catch - t_release),
-               ("0.625", 0.625), ("0.650", 0.650), ("0.700", 0.700), ("0.800", 0.800)]
+    moments = moments + [(f"{plan.t_catch - t_release:.3f} (t_catch)", plan.t_catch - t_release),
+                         ("0.625", 0.625), ("0.650", 0.650), ("0.700", 0.700), ("0.800", 0.800)]
     for name, t in moments:
         i = np.searchsorted(log.t, t_release + t)
         print(f"| {name} | {100 * error[i]:.2f} | {1e3 * (log.q_cmd[i, 5] - log.arm_q[i, 5]):+.1f} "
@@ -454,12 +463,51 @@ def report_tracking(pool=None):
     planned = np.array([plan.q_traj.EvalDerivative(t, 2).ravel() for t in ts])
     a_max = catch.accel_limits(kin)["brake"]
     print(f"- Arm arrival error: {100 * run.outcome.arm_arrival_error:.2f} cm from the planned catch point")
-    print(f"- Joint 6 at 99% of its torque limit for {len(saturated)} simulator steps, "
-          f"{saturated.min():.3f} to {saturated.max():.3f} s after release; no other joint gets there "
+    when = f", {saturated.min():.3f} to {saturated.max():.3f} s after release" if len(saturated) else ""
+    print(f"- Joint 6 at 99% of its torque limit for {len(saturated)} simulator steps{when}; no other joint gets there "
           f"(next highest {np.delete(effort.max(axis=0), 5).max():.2f})")
     print(f"- Peak joint speed: {np.round(np.abs(log.arm_v[during]).max(axis=0) / v_max, 3)} of limit")
     print(f"- Planned peak acceleration: {np.round(np.abs(planned).max(axis=0) / a_max, 2)} of the limit; "
           f"joint 6 still decelerating at {abs(planned[-1, 5]):.1f} rad/s^2 on arrival")
+    print()
+
+
+def report_tracking(pool=None):
+    print("## 4. Tracking through a catch motion\n")
+    print("The nominal catch, from the arm's measured state and its commanded one.\n")
+    print_tracking(catch.simulate_catch(catch.OpenLoopPolicy, sigma_p=0.0),
+                   [("0.101 (hand-off)", 0.101), ("0.150", 0.150), ("0.200", 0.200), ("0.300", 0.300), ("0.400", 0.400),
+                    ("0.500", 0.500)])
+
+
+def run_tracking_trial(trial):
+    run = catch.simulate_catch(catch.PredictOncePolicy, sigma_lat=NOMINAL.sigma_lat, sigma_vz=NOMINAL.sigma_vz, trial=trial)
+    plan = run.plans[-1]
+    if not plan.solve_ok:
+        return None
+    log = run.log
+    v_max, effort_max = toss.arm_limits(run.plant)
+    during = (log.t >= plan.q_traj.start_time()) & (log.t <= plan.t_catch)
+    return dict(speed=np.abs(log.arm_v[during]).max(axis=0) / v_max,
+                saturated=(np.abs(log.arm_effort[during]) / effort_max >= 0.99).sum(axis=0),
+                arrival=run.outcome.arm_arrival_error)
+
+
+def report_tracking_nominal(pool):
+    print("## 12. Tracking at the nominal cell\n")
+    print(f"Approach A's own motion, which starts at {catch.T_WINDOW} s rather than section 4's 0.10 s, so it has less time.  "
+          "First on a noiseless toss:\n")
+    print_tracking(catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.0),
+                   [("0.151 (hand-off)", 0.151), ("0.200", 0.200), ("0.300", 0.300), ("0.400", 0.400), ("0.500", 0.500)])
+    rows = [r for r in pool.map(run_tracking_trial, range(N_TRIALS), chunksize=1) if r is not None]
+    speed = np.array([r["speed"] for r in rows])
+    saturated = np.array([r["saturated"] for r in rows])
+    arrival = np.array([r["arrival"] for r in rows])
+    print(f"Then on the {len(rows)} of {N_TRIALS} noisy tosses with a motion, sigma_p = {1e3 * NOMINAL.sigma_p:.0f} mm, "
+          f"sigma lateral = {NOMINAL.sigma_lat} and sigma vertical = {NOMINAL.sigma_vz} m/s:\n")
+    print(f"- Arm arrival error: median {100 * np.median(arrival):.2f} cm, worst {100 * arrival.max():.2f} cm")
+    print(f"- Peak joint speed, worst over the trials: {np.round(speed.max(axis=0), 3)} of limit")
+    print(f"- Steps at 99% of the torque limit, worst over the trials: {saturated.max(axis=0)}")
     print()
 
 
@@ -469,11 +517,11 @@ def run(sections):
                               ("tracking", report_tracking), ("trigger", report_trigger),
                               ("threshold", report_threshold), ("toss_noise", report_toss_noise),
                               ("first_look", report_first_look), ("window", report_window), ("tilt", report_tilt),
-                              ("time_step", report_time_step)):
+                              ("time_step", report_time_step), ("tracking_nominal", report_tracking_nominal)):
             if name in sections:
                 section(pool)
 
 
 if __name__ == "__main__":
     run(sys.argv[1:] or ["response", "lead", "offsets", "tracking", "trigger", "threshold", "toss_noise", "first_look",
-                         "window", "tilt", "time_step"])
+                         "window", "tilt", "time_step", "tracking_nominal"])

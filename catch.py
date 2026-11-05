@@ -18,6 +18,7 @@ comes on the first control tick after it, the close command goes out at about
 
 from dataclasses import dataclass, field
 from functools import lru_cache
+import math
 import sys
 import time
 from typing import Protocol
@@ -41,7 +42,10 @@ import toss
 from utils.viz import HEADLESS, keep_meshcat_open, publish_recording, start_recording
 
 T_WINDOW = 0.10  # s after release; how long Approach A observes before deciding
-T_MIN_MOTION = 0.41  # s; the fastest the arm reaches the catch from rest (results/catch_feasibility.md)
+T_MIN_MOTION = 0.41  # s; the fastest the arm reaches the catch from rest at the toss's speed (results/catch_feasibility.md)
+# Of each joint's rated speed.  Drake doesn't enforce the rating, and the arm overshoots its plan by up to about 20%,
+# so a plan at the toss's margin relies on speeds the arm isn't rated for: results/approach_a.md.
+PLAN_SPEED_LIMIT = 0.85
 T_MAX_CATCH = 1.0  # s after release; an intercept later than this is not believed
 DECISION_DEADLINE = 0.165  # s after release; past this no motion from rest can arrive in time
 
@@ -205,7 +209,7 @@ class CatchPlanner:
         approach gets and another doesn't would break the comparison."""
         start = time.perf_counter()
         motion = plan_reach(self.kin, self.toss_plan, q0, v0, t_rel, t_catch - t_rel,
-                            p_catch, self.a_max)
+                            p_catch, self.a_max, speed_margin=PLAN_SPEED_LIMIT)
         solve_time = time.perf_counter() - start
         t_release = self.toss_plan.t_release
         q_traj = None if motion is None else motion_to_trajectory(motion, t_release)
@@ -425,6 +429,17 @@ class CatchRun:
     @property
     def plans(self) -> list[CatchPlan]:
         return self.controller.plans
+
+    @property
+    def peak_speed(self) -> float:
+        """The fastest any joint went from the start of the motion to t_catch, as a
+        fraction of its rated speed, or nan if there was no motion."""
+        plan = self.plans[-1]
+        if not plan.solve_ok:
+            return math.nan
+        v_max, _ = toss.arm_limits(self.plant)
+        during = (self.log.t >= plan.q_traj.start_time()) & (self.log.t <= plan.t_catch)
+        return float((np.abs(self.log.arm_v[during]) / v_max).max())
 
 
 @lru_cache(maxsize=1)

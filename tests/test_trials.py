@@ -97,6 +97,26 @@ class WindowTest(unittest.TestCase):
         self.assertEqual((short.t_window, short.n_obs), (catch.T_WINDOW, 10))
         self.assertEqual((long.t_window, long.n_obs), (0.15, 15))
 
+    def test_a_trial_records_how_fast_the_arm_went(self):
+        moved = trials.run_trial(trials.TrialConfig("open_loop", trial=1, sigma_p=0.0, sigma_lat=0.0, sigma_vz=0.0))
+        stayed = trials.run_trial(trials.TrialConfig("predict_once", trial=1, sigma_p=0.0, sigma_lat=0.0, sigma_vz=0.0,
+                                                     t_window=0.15))
+        self.assertGreater(moved.peak_speed, catch.PLAN_SPEED_LIMIT)
+        self.assertTrue(math.isnan(stayed.peak_speed))
+
+    def test_cells_count_the_catches_within_the_speed_tolerance(self):
+        rows = [record(trial=0, caught=True, peak_speed=1.0), record(trial=1, caught=True, peak_speed=1.06),
+                record(trial=2, caught=False, peak_speed=1.0), record(trial=3, caught=False, solve_ok=False, peak_speed=math.nan)]
+        cell = trials.summarize(rows)[0]
+        self.assertEqual(cell.caught_within_speed, 1)
+        self.assertAlmostEqual(cell.peak_median, 1.0)
+        self.assertAlmostEqual(cell.peak_worst, 1.06)
+
+    def test_a_cell_with_no_motions_has_no_peak_speed(self):
+        cell = trials.summarize([record(caught=False, solve_ok=False, peak_speed=math.nan)])[0]
+        self.assertTrue(math.isnan(cell.peak_median))
+        self.assertTrue(math.isnan(cell.peak_worst))
+
     def test_the_baseline_uses_no_observations(self):
         run = trials.run_trial(trials.TrialConfig("open_loop", trial=1, sigma_p=0.0, sigma_lat=0.0, sigma_vz=0.0))
         self.assertEqual(run.n_obs, 0)
@@ -109,6 +129,16 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(cells[("predict_once", 0.10)].caught, 1)
         self.assertEqual(cells[("predict_once", 0.15)].caught, 3)
         self.assertEqual(cells[("predict_once", 0.15)].only_this, 3)
+
+    def test_the_grid_has_the_nominal_cell_so_it_can_be_repeated(self):
+        self.assertIn(trials.TrialConfig("predict_once", trial=7), trials.grid())
+
+    def test_the_grid_has_a_perfect_sensor_at_each_window_with_and_without_toss_noise(self):
+        configs = trials.grid()
+        for t_window in trials.GRID_WINDOWS:
+            for sigma_lat, sigma_vz in [(0.0, 0.0)] + [(s, trials.GRID_SIGMA_VZ) for s in trials.GRID_SIGMA_LAT]:
+                self.assertIn(trials.TrialConfig("predict_once", sigma_p=0.0, sigma_lat=sigma_lat, sigma_vz=sigma_vz,
+                                                 t_window=t_window), configs)
 
     def test_the_grid_has_both_windows_and_every_toss_noise_has_a_baseline(self):
         configs = trials.grid()
@@ -134,7 +164,7 @@ def record(**fields):
                     obs_mode="position_only", sigma_lat=0.02, sigma_vz=0.02, latency=0.03, caught=True,
                     caught_on_pad=False, contact=True, hold_time=1.0, miss_horizontal=0.01, miss_vertical=0.0,
                     miss_closing=0.0, miss_fingers=0.0, miss_across=0.0, end_fingers=0.015, end_across=0.0,
-                    timing_error=0.001, predicted_miss=0.02, arm_arrival_error=0.006, solve_ok=True, solve_time=0.3,
+                    timing_error=0.001, predicted_miss=0.02, arm_arrival_error=0.006, peak_speed=0.96, solve_ok=True, solve_time=0.3,
                     wall_time=3.0, n_solves=1, policy_calls=320, plans_adopted=1, fit_rank_deficient=False,
                     intercept_rejected=False, p_release_true_x=0.8, p_release_true_y=0.0, p_release_true_z=0.77,
                     v_release_true_x=-0.33, v_release_true_y=-0.53, v_release_true_z=2.65)
