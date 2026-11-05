@@ -91,6 +91,17 @@ class BallSensor(DTSystem):
         )
 
 
+def _solve_normal_equations(n00, n01, n11, r0, r1, n_obs, t_anchor) -> Estimate | None:
+    """The fitted flight, in closed form, or None if the observations can't determine it."""
+    det = n00 * n11 - n01**2
+    if n_obs == 0 or det <= 1e-12 * n00 * n11:
+        return None
+    i00, i01, i11 = n11 / det, -n01 / det, n00 / det
+    identity = np.eye(3)
+    cov = np.block([[i00 * identity, i01 * identity], [i01 * identity, i11 * identity]])
+    return Estimate(i00 * r0 + i01 * r1, i01 * r0 + i11 * r1, cov, n_obs, t_anchor)
+
+
 class BallisticFit:
     """Batch least squares over every observation added so far.
 
@@ -123,18 +134,38 @@ class BallisticFit:
                 n11 += w
                 r1 = r1 + w * (o.v - GRAVITY * t)
 
-        det = n00 * n11 - n01**2
-        if not self.observations or det <= 1e-12 * n00 * n11:
-            return None
-        i00, i01, i11 = n11 / det, -n01 / det, n00 / det
-        identity = np.eye(3)
-        cov = np.block([[i00 * identity, i01 * identity], [i01 * identity, i11 * identity]])
-        return Estimate(i00 * r0 + i01 * r1, i01 * r0 + i11 * r1, cov,
-                        len(self.observations), self.t_anchor)
+        return _solve_normal_equations(n00, n01, n11, r0, r1, len(self.observations), self.t_anchor)
 
 
 class RecursiveFit:
-    """Approach B's estimator: planning/approach-b-closed-loop-replanning.md, section 6."""
+    """Approach B's estimator: BallisticFit's least squares, updated one observation
+    at a time, so an estimate costs the same however many observations came before.
 
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError("RecursiveFit belongs to Approach B and isn't written yet")
+    The ball has no process noise, so this is also what a Kalman filter would
+    compute, without a noise setting to tune: planning/approach-b-closed-loop-replanning.md,
+    section 6.
+    """
+
+    def __init__(self, t_anchor: float, sigma_p: float = SIGMA_P, sigma_v: float = SIGMA_V):
+        self.t_anchor = t_anchor
+        self.position_weight = 1 / max(sigma_p, SIGMA_FLOOR) ** 2
+        self.velocity_weight = 1 / max(sigma_v, SIGMA_FLOOR) ** 2
+        self.n_obs = 0
+        self.n00 = self.n01 = self.n11 = 0.0  # the normal matrix, the same for every axis
+        self.r0, self.r1 = np.zeros(3), np.zeros(3)  # its right-hand side, per axis
+
+    def add(self, observation: Observation) -> None:
+        t = observation.t - self.t_anchor
+        w = self.position_weight
+        y = observation.p - 0.5 * GRAVITY * t**2
+        self.n00, self.n01, self.n11 = self.n00 + w, self.n01 + w * t, self.n11 + w * t**2
+        self.r0, self.r1 = self.r0 + w * y, self.r1 + w * t * y
+        if observation.v is not None:
+            w = self.velocity_weight
+            self.n11 += w
+            self.r1 = self.r1 + w * (observation.v - GRAVITY * t)
+        self.n_obs += 1
+
+    def estimate(self) -> Estimate | None:
+        """The fit so far, or None if the observations can't determine it."""
+        return _solve_normal_equations(self.n00, self.n01, self.n11, self.r0, self.r1, self.n_obs, self.t_anchor)

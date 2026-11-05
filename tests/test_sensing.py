@@ -92,6 +92,51 @@ class BallisticFitTest(unittest.TestCase):
         self.assertEqual(est.t_anchor, 1.0)
 
 
+class RecursiveFitTest(unittest.TestCase):
+    """Spec deliverable B1: algebraically the same estimator as the batch fit, so a mismatch is a bug."""
+
+    FLIGHT_TIMES = 0.01 * np.arange(1, 48)
+
+    def assert_matches_the_batch_fit(self, obs, t_anchor=0.0, **kwargs):
+        batch = sensing.BallisticFit(t_anchor, **kwargs)
+        recursive = sensing.RecursiveFit(t_anchor, **kwargs)
+        for o in obs:
+            batch.add(o)
+            recursive.add(o)
+            a, b = batch.estimate(), recursive.estimate()
+            if a is None:
+                self.assertIsNone(b)
+                continue
+            np.testing.assert_allclose(b.p0, a.p0, rtol=0, atol=1e-9)
+            np.testing.assert_allclose(b.v0, a.v0, rtol=0, atol=1e-9)
+            np.testing.assert_allclose(b.cov, a.cov, rtol=0, atol=1e-9)
+            self.assertEqual((b.n_obs, b.t_anchor), (a.n_obs, a.t_anchor))
+
+    def test_matches_the_batch_fit_after_every_sample(self):
+        rng = np.random.default_rng(3)
+        self.assert_matches_the_batch_fit(observations(self.FLIGHT_TIMES, rng, sigma_p=0.002), sigma_p=0.002)
+
+    def test_matches_it_with_a_velocity_channel(self):
+        rng = np.random.default_rng(4)
+        obs = observations(self.FLIGHT_TIMES, rng, sigma_p=0.005, sigma_v=0.05)
+        self.assert_matches_the_batch_fit(obs, sigma_p=0.005, sigma_v=0.05)
+
+    def test_matches_it_with_a_perfect_sensor(self):
+        self.assert_matches_the_batch_fit(observations(self.FLIGHT_TIMES), sigma_p=0.0)
+
+    def test_matches_it_from_a_later_anchor(self):
+        shifted = [sensing.Observation(o.t + 1.0, o.p, o.v) for o in observations(self.FLIGHT_TIMES)]
+        self.assert_matches_the_batch_fit(shifted, t_anchor=1.0, sigma_p=0.002)
+
+    def test_too_few_samples_give_no_estimate(self):
+        recursive = sensing.RecursiveFit(0.0, sigma_p=0.002)
+        self.assertIsNone(recursive.estimate())
+        recursive.add(observations([0.01])[0])
+        self.assertIsNone(recursive.estimate())
+        recursive.add(observations([0.02])[0])
+        self.assertIsNotNone(recursive.estimate())
+
+
 class BallSensorTest(unittest.TestCase):
     BALL = 2
     TRUE_P = np.array([0.1, 0.2, 0.3])
