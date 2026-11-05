@@ -9,6 +9,8 @@ difference between approaches can only come from the policy:
                        the nominal toss comes down
     PredictOncePolicy  Approach A: one plan from a fit over an early window
 
+replan.py adds Approach B to these.
+
 The timeline, in seconds after release: the brake ends at 0.100, the decision
 comes on the first control tick after it, the close command goes out at about
 0.52, and the ball crosses the catch plane at about 0.575.
@@ -430,7 +432,7 @@ class CatchOutcome:
     miss_in_hand: np.ndarray = field(default_factory=lambda: np.full(3, np.nan))  # at that crossing
     end_in_hand: np.ndarray = field(default_factory=lambda: np.full(3, np.nan))  # at the end of the run
     predicted_miss: float = np.nan  # m: |planned catch point - real crossing|, the estimator alone
-    arm_arrival_error: float = np.nan  # m: |pinch at t_catch - planned catch point|, the tracker alone
+    arm_arrival_error: float = np.nan  # m: |pinch at t_catch - planned catch point|: tracking, and where the plan stops
 
 
 @dataclass

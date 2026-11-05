@@ -1,6 +1,7 @@
 """Approach B's policy, and the guards that keep it comparable with Approach A
 (planning/approach-b-closed-loop-replanning.md, section 2)."""
 
+import math
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -310,6 +311,25 @@ class TrialHarnessTest(unittest.TestCase):
             config = replan_trials.ReplanConfig("replan", trial=4)
             with unittest.mock.patch.object(trials, "sweep", return_value=[row(trial=4)]):
                 self.assertEqual(trials.repeat_check([config], saved), [])
+
+    def test_the_largest_command_step_may_differ_a_little_on_a_rerun(self):
+        def rows(step):
+            return dict(caught="True", command_step=step)
+
+        self.assertTrue(trials._reproduces("command_step", rows("0.899"), rows("0.908")))
+        self.assertFalse(trials._reproduces("command_step", rows("0.899"), rows("0.95")))
+
+    def test_saved_results_read_back_as_they_were(self):
+        rows = [row(trial=4, caught=False, plan_drift=math.nan, adoption_times="0.1010;0.1910"), row(approach="open_loop")]
+        with tempfile.TemporaryDirectory() as folder:
+            saved = Path(folder) / "saved.csv"
+            trials.write_csv(rows, saved)
+            again = replan_trials.read_results(saved)
+        self.assertEqual((again[0].trial, again[0].caught, again[0].adoption_times), (4, False, "0.1010;0.1910"))
+        self.assertTrue(math.isnan(again[0].plan_drift))
+        self.assertEqual(again[1].approach, "open_loop")
+        self.assertIsNone(again[1].assumed_latency)
+        self.assertEqual(again[1].n_knots, replan.REPLAN_KNOTS)
 
     def test_a_row_is_compared_with_a_on_the_same_tosses(self):
         a = [row(approach="predict_once", trial=t, caught=t < 2) for t in range(4)]
