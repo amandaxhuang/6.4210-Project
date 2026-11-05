@@ -246,6 +246,16 @@ class MovingStartTest(unittest.TestCase):
             self.assertIsNone(policy.update(t, moved(), Q, V, plan))
         self.assertEqual(len(self.planner.calls), 1)
 
+    def test_a_and_b_make_the_same_first_correction(self):
+        est = moved()
+        calls = []
+        for policy_class in (replan.MovingStartPolicy, replan.OneCorrectionPolicy):
+            policy, plan = self.started(policy_class)
+            policy.update(self.NEXT, est, Q, V, plan)
+            calls.append(self.planner.calls[-1])
+        for name, value in calls[0].items():
+            np.testing.assert_array_equal(calls[1][name], value, name)
+
     def test_one_correction_looks_once_from_the_same_data_as_approach_a(self):
         policy, plan = self.started(replan.OneCorrectionPolicy)
         est = moved()

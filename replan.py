@@ -1,11 +1,14 @@
 """Approach B: refit as data arrives, and replan toward the updated intercept.
 
-The first solve is Approach A's, from the same estimate at the same instant, so B
-starts where A ends.  After that one solver works at a time.  A solve starts from
-everything seen so far, takes tau_compute, and only then can the arm act on it, so
-it plans from where the current plan will be by then.  Consecutive plans therefore
-agree in position and velocity where one takes over from the other.  When no
-solve is running, the next one starts.
+One solver works at a time.  A solve starts from everything seen so far, takes
+tau_compute, and only then can the arm act on it, so it plans from where the current
+plan will be by then.  Consecutive plans therefore agree in position and velocity
+where one takes over from the other.  When no solve is running, the next one starts.
+
+The headline version, MovingStartPolicy, starts the arm on the baseline's plan, which
+needs no measurements, so no solve is free.  OneCorrectionPolicy is Approach A on the
+same footing.  ReplanPolicy is the spec's version, which starts from Approach A's
+free first solve; results/approach_b.md compares them.
 
 Replans are warm-started from the current plan's tail, on fewer knots than the
 first solve.  planning/approach-b-closed-loop-replanning.md has the design, and
@@ -201,7 +204,7 @@ catch.POLICIES["one_correction"] = OneCorrectionPolicy
 
 
 if __name__ == "__main__":
-    run = catch.simulate_catch(ReplanPolicy, sigma_lat=0.04, sigma_vz=0.02, trial=int(sys.argv[1]) if sys.argv[1:] else 0)
+    run = catch.simulate_catch(MovingStartPolicy, sigma_lat=0.04, sigma_vz=0.02, trial=int(sys.argv[1]) if sys.argv[1:] else 0)
     catch.report(run)
     print(f"plans take over at {np.round(np.array(run.controller.adoption_times) - run.toss_plan.t_release, 3)} s after release")
     draw_targets(run)
