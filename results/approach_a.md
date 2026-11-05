@@ -31,18 +31,18 @@ same tosses at σ_p = 3 mm, σ lateral = 0.04 m/s, with only the plan's limit ch
   nominal catch grows from 0.400 s to 0.436 s, so the latest start falls from 0.175 s to 0.140 s.
 - **0.85 is a judgement.** It is the highest level tried where no trial at 0.125 s or 0.15 s goes past 1.05x, and where a noiseless
   catch peaks at 0.96 to 0.99.
-- **The limit is on the plan, not the arm.** At 0.10 s a few trials still go well past it. In the recommended cell's six fastest
+- **The limit is on the plan, not the arm.** At 0.10 s a few trials still go well past it. In the nominal cell's six fastest
   trials, the peak is joint 6 about 0.16 s into the motion, where the plan has that joint at its limit. It isn't left over from the
   brake: joint 6 starts the motion at 0.15 of rated speed. Nothing in the simulation stops that overshoot.
 - **The baseline barely notices.** It goes from 81 to 80 at 0.02 m/s and doesn't change at 0.04 or 0.06 m/s.
 
 ## Choosing the nominal cell
 
-**Recommendation, not yet decided: σ_p = 2 mm, σ lateral = 0.04 m/s, σ vertical = 0.02 m/s, a 0.10 s window.**
+**Chosen 2026-11-05: σ_p = 2 mm, σ lateral = 0.04 m/s, σ vertical = 0.02 m/s, a 0.10 s window.** These are the defaults in the code now.
 
 | σ_p, σ lateral, window | Approach A caught (95% CI) | on pad | baseline caught | on pad | only A / only baseline, p | A's misses: no motion / had a motion | perfect sensor caught |
 |---|---|---|---|---|---|---|---|
-| 5 mm, 0.02, 0.10 s (the spec's) | 16 (10-24) | 1 | 80 | 12 | 3 / 67, 1e-16 | 25 / 59 | 100 |
+| 5 mm, 0.02, 0.10 s (the spec's first) | 16 (10-24) | 1 | 80 | 12 | 3 / 67, 1e-16 | 25 / 59 | 100 |
 | 2 mm, 0.02, 0.10 s (only σ_p moves) | 72 (63-80) | 13 | 80 | 12 | 11 / 19, 0.2 | 3 / 25 | 100 |
 | 3 mm, 0.04, 0.10 s | 37 (28-47) | 6 | 44 | 3 | 19 / 26, 0.37 | 15 / 48 | 91 |
 | 3 mm, 0.04, 0.125 s | 38 (29-48) | 14 | 44 | 3 | 16 / 22, 0.42 | 47 / 15 | 66 |
@@ -67,8 +67,8 @@ Why that one:
 
 What it costs:
 
-- **Two numbers move from the spec's cell**, σ_p from 5 mm to 2 mm and σ lateral from 0.02 to 0.04 m/s, and B's hypothesis is written at
-  the old one. Picking the cell after seeing these results has to be stated in the paper. B hasn't been run, so it wasn't tuned to B's result.
+- **Two numbers move from the spec's first cell**, σ_p from 5 mm to 2 mm and σ lateral from 0.02 to 0.04 m/s, and B's hypothesis moved with
+  them. Picking the cell after seeing these results has to be stated in the paper. B hasn't been run, so it wasn't tuned to B's result.
 - **2 mm is a good sensor,** and it is the only nonzero σ_p tried where one look clearly beats none. At 0.10 s, 3 mm is level with the
   baseline at best, and 5 mm is below it at every toss noise. The paper should say so.
 - **Some catches rely on overspeed:** 3 of the 68 go past 1.05x, and 9 of the 70 on the fresh tosses, about 9% over both. The worst
@@ -77,17 +77,17 @@ What it costs:
   measure.
 - **A gets no charge for solve time**, which has a median of 0.37 s and a p95 of 0.72 s in this cell.
 
-The main alternative is 2 mm, 0.06, 0.10 s, the widest gap over the baseline, 58 to 21, and 55 to 15 on the fresh tosses. But 23 of its
+One alternative was 2 mm, 0.06, 0.10 s, the widest gap over the baseline, 58 to 21, and 55 to 15 on the fresh tosses. But 23 of its
 tosses have no motion, the perfect sensor falls to 79, and at a baseline of 21 there's little left to compare against. If the team would
 rather not count any catch past 1.05x, 2 mm, 0.04, 0.125 s is the other choice, 56 and 54 on the fresh tosses, at the price of 38 tosses
-with no motion and little left for B to fix.
+with no motion and little left for B to fix. That would also bring back the question of when B's first solve starts.
 
 ## Findings
 
 1. **A6 passes.** With a perfect sensor and no toss noise, Approach A catches 100 of 100 with 100% contact at 0.10 s and at 0.125 s,
    against the goal of 50% and 90%. So does the baseline. None of those catches is on the pad: the noiseless catch is a perch of about
    1.5 cm (`results/catch_timing.md`, finding 4). At 0.15 s it has no motion at all.
-2. **At the spec's nominal cell, not looking beats Approach A, 80 to 16.** Section 14 predicted A well below a coin flip there, and it
+2. **At the spec's first nominal cell, not looking beats Approach A, 80 to 16.** Section 14 predicted A well below a coin flip there, and it
    is, 1 point above the 15% that section 15 says should move the cell. Lowering σ_p to 3 mm, as section 14 suggests, gives 43, which is
    near a coin flip but still far below the baseline. The fit's own error is larger than the toss noise it is there to correct.
 3. **0.15 s doesn't work.** On the same tosses it loses to 0.10 s in all six cells compared (p < 0.001 in each, with no correction for
@@ -113,7 +113,7 @@ with no motion and little left for B to fix.
 ## Time per trial and the Week 4 budget
 
 A trial takes 7.4 s on average on one of 7 workers (median 7.4 s, p95 9.8 s). Solves that find a motion have a median of 0.32 s
-across Approach A's rows, and in the recommended cell a median of 0.37 s, a p95 of 0.72 s, and at most 1.10 s. Section 13.4's 4500 trials
+across Approach A's rows, and in the nominal cell a median of 0.37 s, a p95 of 0.72 s, and at most 1.10 s. Section 13.4's 4500 trials
 are 1500 per approach. The baseline and A would take about 55 minutes. B replans up to about 19 times per trial, so if warm starts
 didn't help at all, its 1500 trials would take about another 55 minutes. That is about 2 hours at worst, which fits Week 4 without
 cutting cells. B's solve times have yet to be measured.

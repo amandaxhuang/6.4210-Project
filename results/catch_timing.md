@@ -61,7 +61,7 @@ sections 1 and 7, which don't involve a catch motion, was re-run at that limit; 
    be separated; 12 ms is clearly too early at 2 mm. 3 ms is the middle of the plateau, and puts the noiseless catch about
    13 ms from the late edge and 9 ms from the early one. If only catches on the pad mattered, 0 ms would be the better aim:
    the noiseless catch then ends on the pad, 2 ms from the late edge, and at 2 mm it puts 11 of 60 on the pad against 7.
-10. **A preview of the nominal cell, not a result.** With no toss noise, Approach A catches 17% of tosses at
+10. **A preview of the cell choice, not a result.** With no toss noise, Approach A catches 17% of tosses at
    sigma_p = 5 mm with 72% contact, and 75% at 2 mm with 100% contact. On the pad alone, it is 0% and 12%. The planner found
    no motion in 13 of 60 at 5 mm and none at 2 mm. Spec section 14 predicted well below a coin flip at 5 mm, and 17% is at the
    edge of what section 15 says should move the nominal cell. Step 9's grid, with toss noise, is in `results/approach_a.md`.
@@ -70,7 +70,7 @@ sections 1 and 7, which don't involve a catch motion, was re-run at that limit; 
     of the ballistic prediction, against the 15% allowed (section 7). Rows at the same kind of noise scale the same draws,
     so they aren't independent evidence. With a perfect sensor the fit recovers the perturbed flight, with a median
     predicted miss of 0.0 cm (section 8).
-12. **At the spec's nominal cell, the baseline beats Approach A.** With sigma lateral and vertical both 0.02 m/s, the
+12. **At the spec's first nominal cell, the baseline beats Approach A.** With sigma lateral and vertical both 0.02 m/s, the
     baseline catches 49 of 60 without looking, while Approach A catches 42 at sigma_p = 2 mm and 9 at 5 mm. With a perfect
     sensor it catches all 60 (section 8). So at these levels the one-shot fit's own error is larger than the toss noise it
     is there to correct: 2.87 cm and about 11 ms at 5 mm, against 1.13 cm and 3.8 ms from the toss. The baseline
@@ -95,10 +95,13 @@ sections 1 and 7, which don't involve a catch motion, was re-run at that limit; 
     along the fingers.
 16. **A 1 ms plant time step is small enough (spec Q7).** Of 30 noisy trials, none changed outcome at 0.5 ms, 20 were
     caught at each step, and the ball ended a median of 0.15 cm from where it did at 1 ms, at most 0.28 cm (section 11).
+17. **At the chosen nominal cell, arrival is as good as on a noiseless catch, but joint 6 works harder (section 12).** On the 53 of 60
+    tosses with a motion, the arrival error is 0.49 cm at the median and at most 0.95 cm, against 0.55 cm without noise, and these match
+    the same trials in the grid. Joint 6 reaches 1.10 of rated speed, and no other joint passes 0.97. It is at its torque limit for up to
+    163 simulator steps of 1 ms, against 67 on the noiseless catch. Whether that saturation causes the overspeed wasn't tested.
 
 ## Still open
 
-- **The nominal cell and window** (spec Q3): the data and a recommendation are in `results/approach_a.md`.
 - **The latency sweep needs defining.** The trigger subtracts the latency it is configured with, so sweeping it leaves
   Approach A's fingers moving at the same time and changes nothing. To show an effect, set `assumed_latency` so the
   trigger assumes one latency while the plumbing applies another.
@@ -325,3 +328,11 @@ Approach A, the same 30 trials at each plant time step, sigma_p = 2 mm, sigma la
 - Trials whose outcome changed: 0 of 30 (trials [])
 - Where the ball ends, for trials caught at both: median 0.15 cm apart, at most 0.28 cm
 - Predicted miss, median: 1.65 cm against 1.65 cm
+
+## 12. Tracking at the nominal cell
+
+Approach A's motion starts when section 4's does, so that section covers a noiseless toss.  These are the 53 of 60 noisy tosses with a motion, sigma_p = 2 mm, sigma lateral = 0.04 and sigma vertical = 0.02 m/s, a 0.1 s window:
+
+- Arm arrival error: median 0.49 cm, worst 0.95 cm
+- Peak joint speed, worst over the trials: [0.886 0.945 0.426 0.966 0.71  1.096 0.029] of limit
+- Steps at 99% of the torque limit, worst over the trials: [  0   0   0   0   0 163   0]

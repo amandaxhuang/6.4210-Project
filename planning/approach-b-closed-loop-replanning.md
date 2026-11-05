@@ -13,9 +13,9 @@ doubles the solves per trial. Decisions in `approach-a-predict-once.md` (toss no
 apply here too.
 
 **Implementation notes, 2026-11-04.** From building the shared layer, see `approach-a-predict-once.md`. §10's
-`T_GRIPPER` is gone: use `catch.close_command_time`, which looks up the gripper's response by command phase. §6.3's
-accuracy table counts the sample at release, which the fit excludes, so A's figure at 0.10 s is 2.87 cm rather than
-2.5 cm, and B's early figures are similarly optimistic. B3's "identical" has to mean within a tolerance, because
+`T_GRIPPER` is gone: use `catch.close_command_time`, which looks up the gripper's response by command phase. §6.3's,
+§7.3's and §12's accuracy figures are now at the new σ_p, and leave out the sample at release, which the fit excludes.
+B3's "identical" has to mean within a tolerance, because
 Drake repeats to about 1e-12 m rather than bit for bit, and the solver can turn that into about 2 mm: use
 `trials.csv_differences`, and see `planning/assumptions.md`. A policy gets the commanded state as the spec says, and
 `CatchController` already takes `compute_latency`. Toss noise is `simulate_catch(sigma_lat=, sigma_vz=)`. §12's predicted
@@ -23,13 +23,13 @@ collapse at σ_lat = 0.08 m/s may need a larger level: with a perfect sensor App
 
 Four results from step 9 of A's plan bear on this spec (`results/approach_a.md`):
 
-- **The hypothesis's cell may move.** A's nominal cell and window are still to be chosen, and §1 is written at the old one.
+- **The hypothesis's cell has moved**, to σ_p = 2 mm, σ_lat = 0.04 m/s, σ_vz = 0.02 m/s, with a 0.10 s window. §1, §6.3, §7.3 and §12 are
+  updated. A catches 68 of 100 there, the baseline 44 and a perfect sensor 91. At the old cell A caught 16 and the baseline 80.
 - **Catch motions are planned at 0.85 of rated speed**, for every approach (`catch.PLAN_SPEED_LIMIT`). §7.3's correction envelope was
   worked out at the toss's limit, so expect it to be smaller. It hasn't been re-measured.
-- **`T_FIRST_SOLVE` needs no change if the recommended cell is chosen**, since its window is 0.10 s. An earlier version of this note argued
-  against importing it, for a window of 0.15 s, but 0.15 s no longer works. If the team picks 0.125 s the question comes back: A loses
-  tosses for lack of time there, and B starting at 0.10 s could recover them. *A team decision in that case.*
-- **Cold solves are slow against `tau_compute` at the measured p95 (§9).** At the recommended cell A's solves took a median of 0.37 s and a
+- **`T_FIRST_SOLVE` doesn't change**, since the window stays at 0.10 s. An earlier version of this note argued against importing it, for a
+  window of 0.15 s, but 0.15 s no longer works.
+- **Cold solves are slow against `tau_compute` at the measured p95 (§9).** At the nominal cell A's solves took a median of 0.37 s and a
   p95 of 0.72 s (7 workers in parallel on a laptop), with 0.475 s between 0.10 s and the catch. B6 has to show that warm starts
   change this a great deal, or the latency model needs another look.
 
@@ -48,11 +48,15 @@ baseline, the metrics — exists to put a number on whether it is true.
 
 ### The hypothesis, stated so it can fail
 
-> At the nominal operating cell (σ_p = 5 mm, position-only observations, σ_lat = 0.02 m/s,
+> At the nominal operating cell (σ_p = 2 mm, position-only observations, σ_lat = 0.04 m/s,
 > σ_vz = 0.02 m/s, 30 ms latency), **Approach B achieves a higher catch rate than Approach A on
 > the same 100 tosses**, and the gap is larger at larger σ_p. The gap closes toward zero as
 > σ_p → 0 (nothing to correct) and as σ_lat grows past the arm's correction envelope (nothing
 > *can* be corrected).
+
+This was first written at σ_p = 5 mm and σ_lat = 0.02 m/s. The cell moved on 2026-11-05, after seeing A's and the baseline's results and
+before B has run, so B's result played no part, but the paper has to say so. The grid chose it on trials 0 to 99, so running both approaches on
+trials 100 to 199 as well would keep the comparison apart from the tosses it was chosen on.
 
 That last clause matters: a result where B beats A everywhere by the same margin would suggest
 the two differ for a reason other than information. **The predicted shape of the curve is part
@@ -227,23 +231,24 @@ residual check in `results/`.
 
 ### 6.3 Expected accuracy over time
 
-From `feasibility.prediction_error()`, position-only, σ_p = 5 mm, 100 Hz, 1σ per horizontal axis
-at the catch point:
+From `feasibility.prediction_error()`, position-only, σ_p = 2 mm, 100 Hz, on the samples after release, 1σ per
+horizontal axis at the catch point. These scale with σ_p, so multiply by 2.5 for 5 mm:
 
 | Data up to | A (frozen at 0.10 s) | B (refit) |
 |---|---|---|
-| 0.05 s | — | 6.6 cm |
-| 0.10 s | **2.5 cm** | 2.5 cm |
-| 0.15 s | 2.5 cm | 1.4 cm |
-| 0.20 s | 2.5 cm | 0.9 cm |
-| 0.25 s | 2.5 cm | 0.6 cm |
-| 0.30 s | 2.5 cm | 0.4 cm |
-| 0.40 s | 2.5 cm | 0.3 cm |
-| 0.45 s | 2.5 cm | 0.2 cm |
+| 0.05 s | — | 3.45 cm |
+| 0.10 s | **1.15 cm** | 1.15 cm |
+| 0.15 s | 1.15 cm | 0.59 cm |
+| 0.20 s | 1.15 cm | 0.37 cm |
+| 0.25 s | 1.15 cm | 0.25 cm |
+| 0.30 s | 1.15 cm | 0.18 cm |
+| 0.40 s | 1.15 cm | 0.11 cm |
+| 0.45 s | 1.15 cm | 0.08 cm |
 
-Against a ±1.6 cm pad clearance. **This table is the project's hypothesis in numbers**: A sits past
-the edge of the tolerance for the whole flight, while B is inside it by 0.15 s — *provided* the
-arm can still act on what B learns, which is §7.3.
+**This table is the project's hypothesis in numbers, and at the new cell it is a closer call.** At 5 mm, A's 2.87 cm sat past the ±1.6 cm
+pad clearance for the whole flight. At 2 mm its 1.15 cm is inside it on each axis, though the two axes and the close timing (4.3 ms 1σ, or
+1.3 cm of ball travel) combine. Measured, A catches 68 of 100, and 22 of its 32 misses have a motion, where a perfect sensor has none.
+That is the room B has. Its refit halves A's error by 0.15 s — *provided* the arm can still act on what B learns, which is §7.3.
 
 ---
 
@@ -291,17 +296,17 @@ in the paper.
 From `results/catch_feasibility.md` §3, 76.5°, post-brake hand-off — how far the catch point can
 still be moved toward −y (the binding direction, finding 7) if the new target is learned at `t_c`:
 
-| `t_c` (s) | −y envelope | B's 1σ estimate error | Verdict |
+| `t_c` (s) | −y envelope | B's 1σ estimate error, σ_p = 2 mm | Verdict |
 |---|---|---|---|
-| 0.10 | 6.3 cm | 2.5 cm | Correction is worth far more than the error |
-| 0.15 | 5.6 cm | 1.4 cm | Still paying |
-| 0.20 | 5.0 cm | 0.9 cm | Still paying |
-| 0.25 | 4.5 cm | 0.6 cm | Still paying |
-| 0.30 | 4.2 cm | 0.4 cm | Still paying |
-| 0.35 | 4.2 cm | 0.3 cm | Still paying |
-| 0.40 | 4.0 cm | 0.3 cm | Still paying |
-| 0.45 | 2.7 cm | 0.2 cm | Marginal |
-| 0.50 | 1.2 cm | 0.2 cm | Below the pad clearance; not worth the disturbance |
+| 0.10 | 6.3 cm | 1.15 cm | Correction is worth far more than the error |
+| 0.15 | 5.6 cm | 0.59 cm | Still paying |
+| 0.20 | 5.0 cm | 0.37 cm | Still paying |
+| 0.25 | 4.5 cm | 0.25 cm | Still paying |
+| 0.30 | 4.2 cm | 0.18 cm | Still paying |
+| 0.35 | 4.2 cm | 0.14 cm | Still paying |
+| 0.40 | 4.0 cm | 0.11 cm | Still paying |
+| 0.45 | 2.7 cm | 0.08 cm | Marginal |
+| 0.50 | 1.2 cm | 0.07 cm | Below the pad clearance; not worth the disturbance |
 
 > **`REPLAN_DEADLINE = 0.470 s`**, with the last useful correction around 2 cm — comparable to
 > the ±1.6 cm tolerance, and past it the envelope collapses faster than the estimate improves.
@@ -426,7 +431,7 @@ So the decision depends entirely on a number nobody has measured yet. **B6 measu
 
 1. **Warm start from the previous tail** (§7.2). Expected to be enough.
 2. **Reduce `REPLAN_PERIOD` to 20–40 ms.** 9–19 corrections across a window where the estimate
-   improves from 2.5 cm to 0.2 cm is plenty; the information does not arrive fast enough to
+   improves from 1.15 cm to 0.08 cm is plenty; the information does not arrive fast enough to
    justify 200 Hz anyway. Note that at 100 Hz observations, replanning faster than 100 Hz cannot
    see new data at all — **the sensor rate is a hard ceiling on useful replanning**, and saying so
    in the paper is better than implying we chose 50 Hz for convenience.
@@ -462,13 +467,16 @@ headline bar chart, is what shows the mechanism rather than just the outcome.
 
 ### Predicted shape (from §6.3 against the ±1.6 cm tolerance and §7.3's envelope)
 
-| σ_p | A's frozen 1σ | B's final 1σ | Prediction |
-|---|---|---|---|
-| 0 mm | 0 | 0 | Both near-perfect; **no gap**. The honest control |
-| 2 mm | 1.0 cm | 0.1 cm | Small gap |
-| 5 mm | 2.5 cm | 0.2 cm | **Large gap** — A is past the tolerance edge, B is well inside |
-| 10 mm | 5.0 cm | 0.4 cm | **Likely the largest gap**; A mostly fails, B is still well inside |
-| 20 mm | 10.0 cm | 0.8 cm | A fails; B limited by the 4–6 cm correction envelope, so the gap narrows again |
+| σ_p | A's frozen 1σ | B's final 1σ | A caught of 100, measured | Prediction |
+|---|---|---|---|---|
+| 0 mm | 0 | 0 | 91 | **No gap**: nothing to correct. The honest control. A's 9 misses have no motion |
+| 2 mm (nominal) | 1.15 cm | 0.08 cm | 68 | **A moderate gap.** A's 22 misses with a motion are what B could recover. This row said "small gap" before A was measured, because A's 1σ is inside the clearance |
+| 5 mm | 2.87 cm | 0.21 cm | 11 | **Large gap** — A is past the tolerance edge, B is well inside |
+| 10 mm | 5.73 cm | 0.42 cm | not run | **Likely the largest gap**; A mostly fails, B is still well inside |
+| 20 mm | 11.5 cm | 0.85 cm | not run | A fails; B limited by the 4–6 cm correction envelope, so the gap narrows again |
+
+A's measured column is at σ_lat = 0.04 m/s, σ_vz = 0.02 m/s and a 0.10 s window, from `results/approach_a.md`. Only the 2 mm and 0 mm
+predictions were rewritten after seeing it. All of them are from before B has run.
 
 And against toss variability: the gap should grow with σ_lat up to the point where the required
 correction exceeds the envelope (σ_lat ≈ 0.08 m/s, where 2σ of landing shift is 9.2 cm against a

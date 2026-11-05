@@ -14,8 +14,9 @@ decision: how toss noise is applied (§12), the nominal σ_p (§14), and gripper
 tighter than the pad height (§10).
 
 **Implementation notes, 2026-11-04.** Steps 1 to 9 of §16 are built on branch `approach-a`. Measuring them
-changed a few things below, which are left as written for the record. The evidence is in
-`results/catch_timing.md`, `results/approach_a.md` and `planning/assumptions.md`.
+changed a few things below, which are left as written for the record, except that §6.3, §12, §13.4 and §14 now
+carry the nominal cell chosen on 2026-11-05. The evidence is in `results/catch_timing.md`, `results/approach_a.md`
+and `planning/assumptions.md`.
 
 - **The close trigger replaces §10's arithmetic.** `T_GRIPPER` is gone. The trigger looks up the gripper's
   response by command phase and aims the pads 3 ms before the ball (`catch.close_command_time`).
@@ -23,7 +24,7 @@ changed a few things below, which are left as written for the record. The eviden
   §14 excludes the sample at release, but `prediction_error()` counts it. A1 is tested on the same 10 samples.
   §14's error budget grows accordingly.
 - **The ball's real tolerances differ from §2's.** Sideways tolerance depends on the close timing, and the
-  timing window is about 22 ms rather than 7 ms, but only 3 ms of that holds the ball between the pads; the rest
+  timing window is about 22 ms rather than 7 ms, but only 2 ms of that holds the ball between the pads; the rest
   perches it on their edges. §13.3 stays the headline, with a 1 N grip threshold and perches counted, and every table
   reports on-pad catches beside it. See `results/catch_timing.md`.
 - **"Bit-identical" (A4, A5) isn't achievable.** Drake repeats to about 1e-12 m, and the solver can turn that into about
@@ -32,14 +33,16 @@ changed a few things below, which are left as written for the record. The eviden
 - **Q2 is answered:** the driver stays `position_only`.
 - **Q8 is answered:** toss noise goes onto the ball's velocity 8 ms after release, so §12's discards and
   `toss_infeasible` don't arise. A4 passes.
-- **At the nominal cell of §13.4, the baseline beats A**, 80 to 16 of 100, because the one-shot fit's error exceeds the
-  toss noise. σ_lat = 0.08 m/s doesn't defeat the arm as §12 expected: with a perfect sensor A catches 40 of 60. See
-  `results/approach_a.md`.
+- **At the first nominal cell (σ_p = 5 mm, σ_lat = 0.02 m/s), the baseline beats A**, 80 to 16 of 100, because the one-shot
+  fit's error exceeds the toss noise. σ_lat = 0.08 m/s doesn't defeat the arm as §12 expected: with a perfect sensor A catches
+  40 of 60. See `results/approach_a.md`.
 - **Catch motions are planned at 0.85 of rated speed** (`catch.PLAN_SPEED_LIMIT`), beyond what §9 asks for. At the toss's 0.986
   they relied on speeds the arm isn't rated for, because Drake doesn't enforce the rating: at one cell, 61 of 68 catches went more than
   5% over. This applies to every approach. The shortest motion to the nominal catch is then 0.436 s rather than §14's 0.410 s.
-- **§14's expectation about 0.15 s holds at that limit.** 0.15 s loses to 0.10 s in all six cells compared. Q3's cell is still to be
-  chosen: `results/approach_a.md` has the grid and recommends σ_p = 2 mm, σ_lat = 0.04 m/s, 0.10 s.
+- **§14's expectation about 0.15 s holds at that limit.** 0.15 s loses to 0.10 s in all six cells compared.
+- **Q3 is answered: the nominal cell is now σ_p = 2 mm, σ_lat = 0.04 m/s, σ_vz = 0.02 m/s, with the window staying at 0.10 s.** A
+  catches 68 of 100, the baseline 44 and a perfect sensor 91, and on tosses the grid never used A catches 70 and the baseline 32. The
+  cell was chosen after seeing A's and the baseline's results, before B has run, so the paper has to say so. See `results/approach_a.md`.
 - **Q5 and Q7 are answered:** the tilt limit stays at 25°, and 1 ms is small enough. See `results/catch_timing.md`.
 - **Q6: single catches only.** This departs from the proposal, so the team should agree to it, and the paper should say so.
 
@@ -318,13 +321,13 @@ This is a change from Week 1's provisional default and should be noted as such i
 
 | Parameter | Nominal | Sweep |
 |---|---|---|
-| σ_p | 5 mm | {0, 2, 5, 10, 20} mm |
+| σ_p | 2 mm | {0, 2, 5, 10, 20} mm |
 | σ_v | n/a (position-only) | {0.02, 0.05, 0.1, 0.2} m/s, only in the secondary mode |
 | Observation rate | 100 Hz | fixed |
 
-σ_p = 5 mm was chosen to put A at the pad clearance. At this toss its 100 ms prediction error is
-2.5 cm, past the ±1.6 cm clearance, so A should struggle there and B should have room; §14 asks
-whether to lower it. σ_p = 0
+The nominal started at σ_p = 5 mm, to put A at the pad clearance, with a 100 ms prediction error of
+2.87 cm against the ±1.6 cm clearance. A struggled more than that was meant to: it caught 16 of 100
+against the baseline's 80 (§14). So it moved to 2 mm, where the error is 1.15 cm. σ_p = 0
 is the control that the proposal's baseline goal is stated against; σ_p = 20 mm should break A
 outright.
 
@@ -575,7 +578,7 @@ distribution is not the distribution the paper reports).
 >
 > The two options are to add the noise to the ball's velocity right after release, which keeps the
 > toss at 2.72 m/s and loses nothing to discards, or to toss slower with the method above. 2.55 m/s
-> covers the nominal 0.02 m/s, but the larger σ_lat levels would still lose tosses.
+> covers the then-nominal 0.02 m/s, but the larger σ_lat levels would still lose tosses.
 
 ### Sizing, from the correction envelope
 
@@ -587,11 +590,15 @@ must be sized against it.**
 - The envelope at the decision instant (t = 0.10 s) is 6.3 cm → δv of 0.11 m/s is the hard wall.
 - Choose σ_lat so that 2σ of landing displacement stays inside it: σ_lat = 0.02 m/s gives 1.15 cm
   of 1σ landing shift, 2.3 cm at 2σ, comfortably inside 6.3 cm but comparable to the ±1.6 cm pad
-  clearance — i.e. big enough to matter, small enough to be correctable. **Nominal: 0.02 m/s.**
+  clearance — i.e. big enough to matter, small enough to be correctable. That was the first nominal.
+  **Nominal: 0.04 m/s.** At 0.02 m/s the baseline catches 80 of 100 without looking, because that much
+  noise fits inside the hand's real tolerance (§14). 0.04 m/s gives 2.3 cm of 1σ landing shift, 4.6 cm at 2σ,
+  still inside 6.3 cm, and the baseline catches 44. The 6.3 cm hasn't been re-measured at 0.85 of rated speed
+  and is probably smaller: a perfect sensor has no motion for 9 tosses and catches the other 91.
 
 | Parameter | Nominal | Sweep | 1σ effect at the catch plane |
 |---|---|---|---|
-| σ_lat | 0.02 m/s | {0, 0.01, 0.02, 0.04, 0.08} m/s | 0.57 / 1.15 / 2.3 / 4.6 cm of landing shift |
+| σ_lat | 0.04 m/s | {0, 0.01, 0.02, 0.04, 0.08} m/s | 0.57 / 1.15 / 2.3 / 4.6 cm of landing shift |
 | σ_vz | 0.02 m/s | {0, 0.02, 0.05} m/s | 3.8 / 9.6 ms of arrival-time shift = 1.15 / 2.9 cm of ball travel |
 
 σ_lat = 0.08 m/s should defeat everything including B (2σ = 9.2 cm > the 6.3 cm envelope), which
@@ -659,8 +666,9 @@ once the catch motion is longer than the brake.
 
 A full cross of 3 approaches × 5 σ_p × 5 σ_lat × 4 latency × 100 trials is 30,000 trials. Do not.
 
-**One-factor-at-a-time around a nominal cell** (σ_p = 5 mm, σ_lat = 0.02 m/s, σ_vz = 0.02 m/s,
-latency = 30 ms, position-only):
+**One-factor-at-a-time around a nominal cell** (σ_p = 2 mm, σ_lat = 0.04 m/s, σ_vz = 0.02 m/s,
+latency = 30 ms, `T_WINDOW` = 0.10 s, position-only). Both moved values are already levels of their sweeps, so the
+total stays the same:
 
 | Block | Cells | Trials |
 |---|---|---|
@@ -671,6 +679,9 @@ latency = 30 ms, position-only):
 | σ_vz sweep | 2 more levels | 600 |
 | Secondary mode (position+velocity), nominal | 1 | 300 |
 | **Total** | | **4500** |
+
+The σ_p levels jump from 2 mm to 5 mm, and at this toss noise A falls from 68 to 11 of 100 across that jump. The grid's 37 at 3 mm is the
+only point between them. Adding 3 mm as a level would cost 300 more trials. *Not decided.*
 
 **Measure the per-trial wall time in Week 3 and put it in `results/`.** The sim is ~2.6 s of
 simulated time at a 1 ms step; headless that is seconds, and B adds solver time on top. Trials
@@ -690,36 +701,39 @@ The constraint is `T_WINDOW + T_motion(T_WINDOW) + margin ≤ t_catch`.
 | Term | Value | Source |
 |---|---|---|
 | `t_catch` | 0.575 s | §2 |
-| Minimum motion time from rest | 0.410 s | `results/catch_feasibility.md` §2: arrival 0.510 s from a 0.100 s hand-off |
-| Hard upper bound on `T_WINDOW` | ≈ 0.165 s | 0.575 − 0.410 |
-| **Chosen `T_WINDOW`** | **0.10 s** | leaves 0.065 s of margin for solver time, tracking error, and the fact that minimum-time motions saturate the velocity limits |
+| Minimum motion time from rest | 0.436 s | Planned at 0.85 of rated speed: `results/approach_a.md`. `results/catch_feasibility.md` §2 has 0.410 s at the toss's limit |
+| Hard upper bound on `T_WINDOW` | ≈ 0.14 s | 0.575 − 0.436, for the nominal catch; a noisy toss can need longer. `T_MIN_MOTION` (0.41 s) and `DECISION_DEADLINE` (0.165 s) keep the toss-speed values: they only reject an impossible intercept and catch a policy that never decides |
+| **Chosen `T_WINDOW`** | **0.10 s** | leaves about 0.04 s of margin for tracking error and for tosses that need a longer motion. No time is charged for the solve (§5.4) |
 
-Longer windows buy accuracy (1σ falls from 2.5 cm at 0.10 s to 1.4 cm at 0.15 s, position-only)
+Longer windows buy accuracy (at σ_p = 2 mm, 1σ falls from 1.15 cm at 0.10 s to 0.59 cm at 0.15 s, position-only)
 but spend the margin that lets the motion be tracked rather than merely planned. A window shorter
-than 0.10 s gains nothing, because the arm is braking until then. **Run
-`T_WINDOW ∈ {0.10, 0.125, 0.15}` as a one-off sensitivity check in Week 3**, expecting failures at
-0.15 s with only 15 ms of margin left, and put the three numbers in the paper — "we chose the window with evidence" is worth two sentences.
+than 0.10 s gains nothing, because the arm is braking until then. The one-off check of
+`T_WINDOW ∈ {0.10, 0.125, 0.15}` expected failures at 0.15 s, and got them. At σ_lat = 0.04 m/s A catches 37, 38 and 10 of 100 at
+σ_p = 3 mm, and a perfect sensor 91, 66 and 12. At the nominal 2 mm, 0.10 s and 0.125 s catch 68 and 56, with 0.15 s not run.
+Those numbers go in the paper — "we chose the window with evidence" is worth two sentences.
 
 Note that the first usable sample is at t = 0.01 s, not t = 0: the observation at the release
 instant is the ball still in the fingers. Start the window at the first sample strictly after
 release, and verify the count is 10, not 11.
 
-### Error budget at the nominal cell (σ_p = 5 mm, position-only, T_WINDOW = 0.10 s)
+### Error budget at the nominal cell (σ_p = 2 mm, σ_lat = 0.04 m/s, position-only, T_WINDOW = 0.10 s)
 
-| Source | 1σ, per horizontal axis | Note |
+This section first budgeted the old cell, σ_p = 5 mm and σ_lat = 0.02 m/s: about 3.2 cm 1σ against ±1.6 cm, so **A should land
+well below a coin flip**, with the advice to move the cell before Week 4 if A came out at 90% or 5%. A caught 16 of 100 there, and the
+baseline 80, so the cell moved. The table is now the chosen cell, from 100 measured trials, so it explains the result rather than
+predicting it.
+
+| Source | Size | Note |
 |---|---|---|
-| Estimator (A, frozen at 0.10 s) | **2.5 cm** | `feasibility.prediction_error()` |
-| Toss variability, σ_lat = 0.02 m/s | 1.15 cm | §12 |
-| Arrival timing from σ_vz = 0.02 m/s | 1.15 cm equivalent | 3.8 ms × 2.99 m/s |
-| Gripper response spread | 1.2 cm equivalent | half of 8 ms × 2.99 m/s, unless A3 shrinks it (§10) |
-| Tracking error | **unmeasured** | Week 1 §7.1–7.2; must be measured in Week 3 |
-| **Tolerance to beat** | **±1.6 cm** | pad clearance |
+| Estimator (A, frozen at 0.10 s) | **1.15 cm** 1σ per horizontal axis | `feasibility.prediction_error()` on the fit's 10 samples. The median predicted miss is 1.5 cm |
+| Arrival timing | 4.3 ms 1σ, or 1.3 cm of ball travel | Measured, against a window of about 22 ms, 2 ms of it on the pad. At 2.99 m/s |
+| Tracking | 0.50 cm median, 0.95 cm worst | Measured on the 90 tosses with a motion. A noiseless catch has 0.55 cm |
+| Toss variability, σ_lat = 0.04 m/s | 2.3 cm of landing shift | Not an error for A, because the noise goes on before the first observation and the fit sees it. It is what the baseline faces, at a median predicted miss of 2.4 cm, and it costs A reach: a perfect sensor has no motion for 9 tosses, and catches the other 91 |
+| Gripper response spread | Not a random term now | §10's 8 ms spread is looked up by command phase (`catch.close_command_time`) |
+| **Tolerance to beat** | **about ±2 cm** along the closing axis, ±2.5 cm across the pads | `results/catch_timing.md`, one axis at a time with perfect timing, so real errors, which combine, have less room. §2's ±1.6 cm is the pad clearance |
 
-Summed in quadrature (excluding tracking): ≈ 3.2 cm 1σ against a ±1.6 cm tolerance. **A should land
-well below a coin flip at the nominal cell**, while a coin flip is the operating point that makes
-the A-vs-B comparison most informative. If A comes out at 90% or at 5%, the nominal cell is in the
-wrong place and should be moved (by σ_p) before the Week 4 runs, not after. Expect to lower it: at
-σ_p = 3 mm the estimator term falls to 1.5 cm and the total to about 2.5 cm.
+A catches 68 of 100 (58–76%), near enough to the coin flip that makes the A-vs-B comparison most informative, and inside §15's 15% to 85%.
+Of its 32 misses, 10 have no motion and 22 have a motion in the wrong place or a close at the wrong time. A perfect sensor has none of those 22.
 
 ### The unmeasured term
 
@@ -791,7 +805,8 @@ the harness are written costs days.
 2. **Does the driver change to `position_and_torque` / `InverseDynamicsDriver`?** Answered by the
    §14 measurement. *Needed before: the Week 4 sweep.*
 3. **Is the nominal cell at the right σ_p?** §14 predicts A well below a coin flip at 5 mm. Answered
-   by step 9 of §16. *Needed before: Week 4.*
+   by step 9 of §16. *Needed before: Week 4.* **No: it moved to σ_p = 2 mm, and σ_lat moved to 0.04 m/s. The window stays at
+   0.10 s** (`results/approach_a.md`).
 4. **Do we run the secondary `POSITION_AND_VELOCITY` sweep?** Budget-dependent; the position-only
    decision in §6.2 means the paper's claim does not require it. *Needed by: Week 4 planning.*
 5. **Is `catch_pose`'s `CATCH_TILT = 25°` still right once the ball may come down off-centre?**
@@ -806,7 +821,7 @@ the harness are written costs days.
    the outcome does not change. *Needed by: Week 4.*
 8. **How is toss noise applied?** Velocity noise on the command no longer works at the arm's limit
    (§12). Add it to the ball's velocity right after release, or toss slower, to 2.55 m/s and a
-   1.087 m peak for the nominal 0.02 m/s? *Owner: TBD. Needed before: step 7 of §16.*
+   1.087 m peak for the then-nominal 0.02 m/s? *Owner: TBD. Needed before: step 7 of §16.*
 
 ---
 
