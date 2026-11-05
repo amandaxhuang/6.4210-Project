@@ -54,7 +54,8 @@ SAME_AFTER_SOLVE = 5e-3
 SAME_COMMAND_STEP = 0.02
 CROSSING_COLUMNS = ("timing_error", "predicted_miss")
 AFTER_SOLVE_COLUMNS = ("hold_time", "miss_horizontal", "miss_vertical", "miss_closing", "miss_fingers", "miss_across",
-                       "arm_arrival_error", "end_fingers", "end_across", "peak_speed", "command_speed", "tracking_peak")
+                       "arm_arrival_error", "end_fingers", "end_across", "peak_speed", "command_speed", "tracking_peak",
+                       "plan_stop_error", "tracking_error")
 RESTING_PLACE_COLUMNS = ("end_fingers", "end_across")
 WALL_CLOCK_COLUMNS = ("solve_time", "wall_time", "solve_time_median", "solve_time_p95")
 
@@ -114,7 +115,7 @@ class TrialResult:
     end_across: float
     timing_error: float  # real crossing of the catch plane - planned
     predicted_miss: float  # the estimator's error alone
-    arm_arrival_error: float  # tracking, and where the plan stops: results/replan_timing.md
+    arm_arrival_error: float  # the two below, combined
     peak_speed: float  # fastest any joint went, of its rated speed; nan with no motion
     solve_ok: bool
     solve_time: float
@@ -131,6 +132,8 @@ class TrialResult:
     v_release_true_y: float
     v_release_true_z: float
     assumed_latency: float | None = None
+    plan_stop_error: float = math.nan  # where the plan stops, from its target: results/replan_timing.md
+    tracking_error: float = math.nan  # where the arm got to, from where the plan stops
 
 
 def release_state(run) -> tuple[np.ndarray, np.ndarray]:
@@ -176,6 +179,7 @@ def record(config: TrialConfig, run: catch.CatchRun, wall_time: float) -> TrialR
         fit_rank_deficient=bool(plan.fit_rank_deficient), intercept_rejected=bool(plan.intercept_rejected),
         p_release_true_x=float(p0[0]), p_release_true_y=float(p0[1]), p_release_true_z=float(p0[2]),
         v_release_true_x=float(v0[0]), v_release_true_y=float(v0[1]), v_release_true_z=float(v0[2]),
+        plan_stop_error=float(o.plan_stop_error), tracking_error=float(o.tracking_error),
     )
 
 

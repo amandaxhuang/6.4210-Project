@@ -432,7 +432,9 @@ class CatchOutcome:
     miss_in_hand: np.ndarray = field(default_factory=lambda: np.full(3, np.nan))  # at that crossing
     end_in_hand: np.ndarray = field(default_factory=lambda: np.full(3, np.nan))  # at the end of the run
     predicted_miss: float = np.nan  # m: |planned catch point - real crossing|, the estimator alone
-    arm_arrival_error: float = np.nan  # m: |pinch at t_catch - planned catch point|: tracking, and where the plan stops
+    arm_arrival_error: float = np.nan  # m: |pinch at t_catch - planned catch point|, which these two combine into:
+    plan_stop_error: float = np.nan  # m: |where the plan stops - planned catch point|
+    tracking_error: float = np.nan  # m: |pinch at t_catch - where the plan stops|
 
 
 @dataclass
@@ -615,9 +617,13 @@ def score(plan: toss.TossPlan, log: CatchLog, controller: CatchController) -> Ca
         R_WG = log.R_WG[np.searchsorted(log.t, fly.t_down)]
         outcome.miss_in_hand = R_WG.T @ (fly.p_down - pinch)
         outcome.predicted_miss = np.linalg.norm(chosen.p_catch - fly.p_down)
-    outcome.arm_arrival_error = np.linalg.norm(_at(chosen.t_catch, log.t, log.pinch) - chosen.p_catch)
+    arrived = _at(chosen.t_catch, log.t, log.pinch)
+    outcome.arm_arrival_error = np.linalg.norm(arrived - chosen.p_catch)
 
     if chosen.solve_ok:
+        stopped = shared_kinematics().pinch(chosen.q_traj.value(chosen.t_catch).ravel())
+        outcome.plan_stop_error = np.linalg.norm(stopped - chosen.p_catch)
+        outcome.tracking_error = np.linalg.norm(arrived - stopped)
         outcome.hold_time, outcome.t_fingers_stopped = hold_after_closing(log, controller)
         outcome.caught = outcome.hold_time >= HOLD_TIME
     return outcome

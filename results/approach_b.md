@@ -115,6 +115,19 @@ Every row is position-only with sigma lateral = 0.04 m/s, sigma vertical = 0.02 
 | Approach B, 0 ms delay, every 100 ms, 12 knots, deadline 0.47 | 0-99 | 5 | 63 / 100 (53–72%) | 32 | 69 | 29 | 0.5 | 0.47 | 7.2 | 0.95 / 1.11 | 56 | 52 / 0, p = 4.4e-16 | 29 / 10, p = 0.0034 | 4 | 4 | 0 | 150 | 3.14 / 8.51 | 3.0 / 28.0 |
 | Approach B, 45 ms delay, every 45 ms, 24 knots, deadline 0.47 | 0-99 | 5 | 67 / 100 (57–75%) | 36 | 71 | 29 | 0.4 | 0.46 | 7.1 | 0.95 / 1.10 | 60 | 56 / 0, p = 2.8e-17 | 32 / 9, p = 0.00043 | 7 | 7 | 0 | 157 | 3.29 / 8.50 | 5.0 / 28.0 |
 | Approach A, solve charged 45 ms | 0-99 | 5 | 3 / 100 (1–8%) | 0 | 16 | 83 | 3.8 | 0.41 | 9.8 | 0.94 / 1.01 | 3 | 0 / 8, p = 0.0078 | 2 / 43, p = 5.9e-11 | 1 | 1 | 0 | 0 | - | - |
+| B from the baseline's plan, 45 ms delay, every 45 ms, 12 knots, deadline 0.47 | 0-99 | 0 | 85 / 100 (77–91%) | 47 | 98 | 0 | 0.0 | 0.55 | 1.6 | 0.96 / 1.02 | 85 | 0 / 6, p = 0.031 | 41 / 0, p = 9.1e-13 | 2 | 2 | 7 | 120 | 1.95 / 6.35 | 1.0 / 10.0 |
+| B from the baseline's plan, 45 ms delay, every 45 ms, 12 knots, deadline 0.47 | 0-99 | 2 | 87 / 100 (79–92%) | 48 | 98 | 0 | 0.1 | 0.54 | 1.3 | 0.96 / 1.03 | 87 | 22 / 3, p = 0.00016 | 43 / 0, p = 2.3e-13 | 7 | 6 | 2 | 158 | 1.96 / 6.27 | 0.5 / 10.0 |
+| B from the baseline's plan, 45 ms delay, every 45 ms, 12 knots, deadline 0.47 | 0-99 | 5 | 83 / 100 (74–89%) | 47 | 98 | 0 | 0.3 | 0.49 | 1.9 | 0.96 / 1.03 | 83 | 72 / 0, p = 4.2e-22 | 39 / 0, p = 3.6e-12 | 9 | 8 | 0 | 201 | 1.96 / 6.16 | 2.0 / 13.0 |
+| B from the baseline's plan, 45 ms delay, every 45 ms, 12 knots, deadline 0.47 | 100-199 | 2 | 84 / 100 (76–90%) | 40 | 98 | 0 | 0.2 | 0.49 | 1.7 | 0.96 / 1.04 | 84 | 20 / 6, p = 0.0094 | 52 / 0, p = 4.4e-16 | 7 | 6 | 2 | 160 | 2.15 / 5.41 | 0.0 / 9.0 |
+| A from the baseline's plan, one correction, 45 ms delay | 0-99 | 0 | 85 / 100 (77–91%) | 47 | 98 | 0 | 0.0 | 0.55 | 1.6 | 0.96 / 1.02 | 85 | 0 / 6, p = 0.031 | 41 / 0, p = 9.1e-13 | 2 | 2 | 0 | 15 | 1.95 / 6.35 | 1.0 / 10.0 |
+| A from the baseline's plan, one correction, 45 ms delay | 0-99 | 2 | 62 / 100 (52–71%) | 13 | 98 | 0 | 1.7 | 0.52 | 4.1 | 0.96 / 1.04 | 62 | 1 / 7, p = 0.07 | 28 / 10, p = 0.0051 | 2 | 2 | 0 | 19 | 1.92 / 6.43 | 1.5 / 13.0 |
+| A from the baseline's plan, one correction, 45 ms delay | 0-99 | 5 | 24 / 100 (17–33%) | 2 | 94 | 0 | 3.2 | 0.55 | 7.8 | 0.96 / 1.04 | 24 | 13 / 0, p = 0.00024 | 4 / 24, p = 0.00018 | 2 | 2 | 0 | 36 | 2.09 / 8.84 | 2.0 / 28.0 |
+| A from the baseline's plan, one correction, 45 ms delay | 100-199 | 2 | 64 / 100 (54–73%) | 14 | 98 | 0 | 1.6 | 0.52 | 4.0 | 0.96 / 1.04 | 64 | 0 / 6, p = 0.031 | 38 / 6, p = 9.4e-07 | 2 | 2 | 0 | 19 | 2.37 / 6.60 | 0.5 / 10.0 |
+| baseline, stop within 1 mm | 0-99 | - | 40 / 100 (31–50%) | 3 | 98 | 0 | 2.4 | 0.61 | 3.9 | 0.97 / 0.97 | 40 | - | - | 1 | 1 | 0 | 0 | - | - |
+| Approach A, stop within 1 mm | 0-99 | 2 | 64 / 100 (54–73%) | 13 | 84 | 16 | 1.5 | 0.60 | 4.3 | 0.96 / 1.10 | 61 | - | 33 / 9, p = 0.00027 | 1 | 1 | 0 | 0 | - | - |
+| Approach B, 45 ms delay, every 45 ms, 12 knots, deadline 0.47, stop within 1 mm | 0-99 | 2 | 84 / 100 (76–90%) | 35 | 84 | 16 | 0.2 | 0.61 | 1.9 | 0.95 / 1.10 | 77 | 20 / 0, p = 1.9e-06 | 45 / 1, p = 1.3e-12 | 6 | 6 | 2 | 88 | 1.44 / 3.32 | 2.0 / 12.0 |
+| Approach A, stop within 1 mm | 0-99 | 5 | 8 / 100 (4–15%) | 0 | 65 | 30 | 3.8 | 0.60 | 10.7 | 0.95 / 1.10 | 7 | - | 2 / 34, p = 1.9e-08 | 1 | 1 | 0 | 0 | - | - |
+| Approach B, 45 ms delay, every 45 ms, 12 knots, deadline 0.47, stop within 1 mm | 0-99 | 5 | 63 / 100 (53–72%) | 30 | 70 | 30 | 0.5 | 0.61 | 7.3 | 0.95 / 1.10 | 55 | 55 / 0, p = 5.6e-17 | 34 / 11, p = 0.00082 | 7 | 7 | 0 | 177 | 3.26 / 8.50 | 4.5 / 28.0 |
 
 What B did with each kind of toss A had, at the headline settings, sigma_p = 2 mm, trials 0 to 99:
 
@@ -169,4 +182,4 @@ Catches against how far B moved the target, sigma_p = 5 mm, its tosses with a mo
 | 3.3 to 4.5 | 18 | 18 | 2 |
 | 4.6 to 8.5 | 17 | 17 | 0 |
 
-3200 trials, 8.7 s per trial on average per worker.
+4500 trials, 8.2 s per trial on average per worker.

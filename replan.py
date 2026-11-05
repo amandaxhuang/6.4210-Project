@@ -11,15 +11,20 @@ Replans are warm-started from the current plan's tail, on fewer knots than the
 first solve.  planning/approach-b-closed-loop-replanning.md has the design, and
 results/replan_timing.md the measurements that set the constants below.
 
-    python replan.py
+    python replan.py [trial]
+
+runs one toss at the nominal cell in Meshcat, with a sphere on the current target.
 """
 
+import sys
+
 import numpy as np
+from pydrake.all import RigidTransform, Rgba, Sphere
 
 import catch
 from sensing import RecursiveFit
 import toss
-from utils.viz import keep_meshcat_open
+from utils.viz import current_meshcat, keep_meshcat_open
 
 T_FIRST_SOLVE = catch.T_WINDOW  # the same instant as Approach A's only solve, by definition
 REPLAN_KNOTS = 12
@@ -120,6 +125,38 @@ class ReplanPolicy:
         return plan
 
 
+class MovingStartPolicy(ReplanPolicy):
+    """Approach B with no free solve.  The arm starts on the baseline's plan, which
+    uses no measurements, so it could really be computed before the toss.  The
+    solver is then free at once, and every solve after that is charged."""
+
+    def __init__(self, planner: catch.CatchPlanner, **settings):
+        super().__init__(planner, **settings)
+        self.first = catch.OpenLoopPolicy(planner)
+
+    def update(self, t_rel, est, q_cmd, qdot_cmd, plan):
+        decided = self.first.decided
+        new = super().update(t_rel, est, q_cmd, qdot_cmd, plan)
+        if new is not None and not decided:
+            self.t_next = t_rel
+        return new
+
+
+class OneCorrectionPolicy(MovingStartPolicy):
+    """Approach A on the same footing as MovingStartPolicy: the same start, and one
+    charged solve from the same data as Approach A's, kept to whatever comes of it."""
+
+    def __init__(self, planner: catch.CatchPlanner, **settings):
+        super().__init__(planner, **settings)
+        self.corrected = False
+
+    def _replan(self, t_start, est, q_cmd, qdot_cmd, plan):
+        if self.corrected:
+            return None
+        self.corrected = True
+        return super()._replan(t_start, est, q_cmd, qdot_cmd, plan)
+
+
 def command_steps(run: catch.CatchRun) -> tuple[float, float]:
     """How close the arm command came to breaking continuity, over the whole catch
     motion (spec deliverable B4), as fractions of what the plans allow in one row: the
@@ -140,9 +177,32 @@ def command_steps(run: catch.CatchRun) -> tuple[float, float]:
     return float((np.abs(v) / v_max).max()), float((np.abs(np.diff(v, axis=0)) / (a_max * between)).max())
 
 
+def draw_targets(run: catch.CatchRun) -> None:
+    """Add to Meshcat's animation where the arm is aiming, from when each plan takes over."""
+    meshcat = current_meshcat()
+    if meshcat is None:
+        return
+    path = "replan/target"
+    meshcat.SetObject(path, Sphere(0.012), Rgba(1.0, 0.45, 0.1, 0.9))
+    recording = meshcat.get_mutable_recording()
+    target = None
+    for plan, t in zip(run.plans, run.controller.adoption_times):
+        frame = recording.frame(t)
+        if target is not None:  # hold the last target until this frame, rather than sliding to the next
+            recording.SetTransform(frame - 1, f"/drake/{path}", target)
+        target = RigidTransform(plan.p_catch)
+        recording.SetTransform(frame, f"/drake/{path}", target)
+    meshcat.PublishRecording()
+
+
 catch.POLICIES["replan"] = ReplanPolicy
+catch.POLICIES["replan_moving_start"] = MovingStartPolicy
+catch.POLICIES["one_correction"] = OneCorrectionPolicy
 
 
 if __name__ == "__main__":
-    catch.report(catch.simulate_catch(ReplanPolicy, sigma_lat=0.04, sigma_vz=0.02))
+    run = catch.simulate_catch(ReplanPolicy, sigma_lat=0.04, sigma_vz=0.02, trial=int(sys.argv[1]) if sys.argv[1:] else 0)
+    catch.report(run)
+    print(f"plans take over at {np.round(np.array(run.controller.adoption_times) - run.toss_plan.t_release, 3)} s after release")
+    draw_targets(run)
     keep_meshcat_open()

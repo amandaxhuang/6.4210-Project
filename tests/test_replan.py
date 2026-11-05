@@ -199,6 +199,82 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(policy.solve_times, [0.01] * 3)
 
 
+class MovingStartTest(unittest.TestCase):
+    """No solve is free: the arm starts on the baseline's plan, which uses no measurements,
+    so it can be computed before the toss, and every solve after it is charged."""
+
+    NEXT = FIRST + 0.005
+
+    def started(self, policy_class=replan.MovingStartPolicy, fail=(), **kwargs):
+        self.planner = RecordingPlanner(fail)
+        policy = policy_class(self.planner, **{"tau_compute": TAU, **kwargs})
+        return policy, policy.update(FIRST, estimate(), Q, V, None)
+
+    def test_the_first_plan_is_the_baselines(self):
+        a, b = RecordingPlanner(), RecordingPlanner()
+        catch.OpenLoopPolicy(a).update(FIRST, estimate(), Q, V, None)
+        replan.MovingStartPolicy(b).update(FIRST, estimate(), Q, V, None)
+        self.assertEqual(a.calls[0].keys(), b.calls[0].keys())
+        for name, value in a.calls[0].items():
+            np.testing.assert_array_equal(b.calls[0][name], value, name)
+        self.assertIsNone(b.calls[0]["est"])
+
+    def test_the_first_charged_solve_starts_as_soon_as_the_solver_is_free(self):
+        policy, plan = self.started()
+        new = policy.update(self.NEXT, moved(), Q, V, plan)
+        self.assertIsNotNone(new)
+        call = self.planner.calls[-1]
+        self.assertAlmostEqual(call["t_rel"], self.NEXT + TAU)
+        self.assertEqual(call["guess"][0], "tail")
+        np.testing.assert_allclose(call["q0"], np.full(7, T_RELEASE + self.NEXT + TAU))
+
+    def test_after_that_it_replans_like_b(self):
+        policy, plan = self.started()
+        new = policy.update(self.NEXT, moved(), Q, V, plan)
+        self.assertIsNone(policy.update(self.NEXT + TAU - 0.005, moved(0.1), Q, V, new))
+        self.assertIsNotNone(policy.update(self.NEXT + TAU, moved(0.1), Q, V, new))
+
+    def test_a_failed_solve_stays_on_the_baselines_plan_and_is_tried_again(self):
+        policy, plan = self.started(fail=(2,))
+        self.assertIsNone(policy.update(self.NEXT, moved(), Q, V, plan))
+        self.assertEqual(policy.solve_failures, 1)
+        self.assertIsNotNone(policy.update(self.NEXT + TAU, moved(), Q, V, plan))
+
+    def test_a_deadline_at_the_window_leaves_only_the_baselines_plan(self):
+        policy, plan = self.started(deadline=catch.T_WINDOW)
+        for t in FIRST + np.arange(0.005, 0.4, 0.005):
+            self.assertIsNone(policy.update(t, moved(), Q, V, plan))
+        self.assertEqual(len(self.planner.calls), 1)
+
+    def test_one_correction_looks_once_from_the_same_data_as_approach_a(self):
+        policy, plan = self.started(replan.OneCorrectionPolicy)
+        est = moved()
+        new = policy.update(self.NEXT, est, Q, V, plan)
+        self.assertIs(self.planner.calls[-1]["est"], est)
+        for t in self.NEXT + np.arange(0.005, 0.3, 0.005):
+            self.assertIsNone(policy.update(t, moved(0.1), Q, V, new))
+        self.assertEqual(len(self.planner.calls), 2)
+
+    def test_one_correction_doesnt_try_again_if_its_solve_fails(self):
+        policy, plan = self.started(replan.OneCorrectionPolicy, fail=(2,))
+        self.assertIsNone(policy.update(self.NEXT, moved(), Q, V, plan))
+        for t in self.NEXT + np.arange(0.005, 0.3, 0.005):
+            self.assertIsNone(policy.update(t, moved(0.1), Q, V, plan))
+        self.assertEqual(len(self.planner.calls), 2)
+
+    def test_with_no_correction_it_is_the_baseline(self):
+        """With replanning off these must match the baseline, as B must match A."""
+        noise = dict(sigma_p=0.002, sigma_lat=0.04, sigma_vz=0.02, trial=0)
+        config = trials.TrialConfig("open_loop", **noise)
+        a = catch.simulate_catch(catch.OpenLoopPolicy, **noise)
+        b = catch.simulate_catch(lambda planner: replan.MovingStartPolicy(planner, deadline=catch.T_WINDOW), **noise)
+        with tempfile.TemporaryDirectory() as folder:
+            path_a, path_b = Path(folder) / "a.csv", Path(folder) / "b.csv"
+            trials.write_csv([trials.record(config, a, 0.0)], path_a)
+            trials.write_csv([trials.record(config, b, 0.0)], path_b)
+            self.assertEqual(trials.csv_differences(path_a, path_b), [])
+
+
 class InterceptForAMovingArmTest(unittest.TestCase):
     def test_the_time_to_reach_it_can_be_shorter_once_the_arm_is_moving(self):
         self.assertIsNone(catch.intercept(estimate(), 0.674, 0.3))

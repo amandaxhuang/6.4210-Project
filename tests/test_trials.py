@@ -52,6 +52,17 @@ class RunTrialTest(unittest.TestCase):
         cls.quiet = trials.run_trial(trials.TrialConfig("predict_once", trial=5, sigma_p=0.0, sigma_lat=0.0, sigma_vz=0.0))
         cls.baseline = trials.run_trial(trials.TrialConfig("open_loop", trial=5, sigma_p=0.0, sigma_lat=0.02, sigma_vz=0.02))
 
+    def test_the_arrival_error_splits_into_where_the_plan_stops_and_tracking(self):
+        self.assertAlmostEqual(self.a.plan_stop_error, 0.0052, delta=0.0002)  # the corner of POSITION_TOL's box
+        self.assertGreater(self.a.tracking_error, 0.002)
+        self.assertLess(self.a.tracking_error, 0.012)
+        self.assertLessEqual(self.a.arm_arrival_error, self.a.plan_stop_error + self.a.tracking_error + 1e-6)
+
+    def test_with_no_motion_there_is_no_split(self):
+        stayed = trials.run_trial(trials.TrialConfig("predict_once", trial=1, sigma_p=0.0, sigma_lat=0.0, sigma_vz=0.0, t_window=0.15))
+        self.assertTrue(math.isnan(stayed.plan_stop_error))
+        self.assertTrue(math.isnan(stayed.tracking_error))
+
     def test_the_record_names_its_cell(self):
         self.assertEqual(self.a.approach, "predict_once")
         self.assertEqual(self.a.trial, 5)
