@@ -481,7 +481,8 @@ def report_tracking(pool=None):
 
 
 def run_tracking_trial(trial):
-    run = catch.simulate_catch(catch.PredictOncePolicy, sigma_lat=NOMINAL.sigma_lat, sigma_vz=NOMINAL.sigma_vz, trial=trial)
+    run = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=NOMINAL.sigma_p, sigma_lat=NOMINAL.sigma_lat,
+                               sigma_vz=NOMINAL.sigma_vz, trial=trial)
     plan = run.plans[-1]
     if not plan.solve_ok:
         return None
@@ -495,16 +496,13 @@ def run_tracking_trial(trial):
 
 def report_tracking_nominal(pool):
     print("## 12. Tracking at the nominal cell\n")
-    print(f"Approach A's own motion, which starts at {catch.T_WINDOW} s rather than section 4's 0.10 s, so it has less time.  "
-          "First on a noiseless toss:\n")
-    print_tracking(catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.0),
-                   [("0.151 (hand-off)", 0.151), ("0.200", 0.200), ("0.300", 0.300), ("0.400", 0.400), ("0.500", 0.500)])
     rows = [r for r in pool.map(run_tracking_trial, range(N_TRIALS), chunksize=1) if r is not None]
     speed = np.array([r["speed"] for r in rows])
     saturated = np.array([r["saturated"] for r in rows])
     arrival = np.array([r["arrival"] for r in rows])
-    print(f"Then on the {len(rows)} of {N_TRIALS} noisy tosses with a motion, sigma_p = {1e3 * NOMINAL.sigma_p:.0f} mm, "
-          f"sigma lateral = {NOMINAL.sigma_lat} and sigma vertical = {NOMINAL.sigma_vz} m/s:\n")
+    print(f"Approach A's motion starts when section 4's does, so that section covers a noiseless toss.  These are the {len(rows)} of "
+          f"{N_TRIALS} noisy tosses with a motion, sigma_p = {1e3 * NOMINAL.sigma_p:.0f} mm, sigma lateral = {NOMINAL.sigma_lat} and "
+          f"sigma vertical = {NOMINAL.sigma_vz} m/s, a {NOMINAL.t_window} s window:\n")
     print(f"- Arm arrival error: median {100 * np.median(arrival):.2f} cm, worst {100 * arrival.max():.2f} cm")
     print(f"- Peak joint speed, worst over the trials: {np.round(speed.max(axis=0), 3)} of limit")
     print(f"- Steps at 99% of the torque limit, worst over the trials: {saturated.max(axis=0)}")

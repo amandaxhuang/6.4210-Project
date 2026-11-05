@@ -72,7 +72,7 @@ class TrialConfig:
     sigma_p: float = sensing.SIGMA_P
     sigma_v: float = sensing.SIGMA_V
     obs_mode: str = sensing.POSITION_ONLY
-    sigma_lat: float = 0.02
+    sigma_lat: float = 0.04
     sigma_vz: float = 0.02
     latency: float = catch.T_LATENCY
     assumed_latency: float | None = None  # what the trigger allows for, if not the latency itself

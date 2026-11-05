@@ -20,7 +20,7 @@ from toss import G_ACCEL
 from utils.dtsystems import Abstract, DTSystem
 
 OBS_RATE = 100.0  # Hz
-SIGMA_P = 0.005  # m, per axis
+SIGMA_P = 0.002  # m, per axis
 SIGMA_V = 0.05  # m/s, per axis; a sensor specification, not a difference of positions
 
 POSITION_ONLY = "position_only"

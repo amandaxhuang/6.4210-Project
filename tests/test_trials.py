@@ -130,6 +130,10 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(cells[("predict_once", 0.15)].caught, 3)
         self.assertEqual(cells[("predict_once", 0.15)].only_this, 3)
 
+    def test_the_defaults_are_the_nominal_cell(self):
+        config = trials.TrialConfig("predict_once")
+        self.assertEqual((config.sigma_p, config.sigma_lat, config.sigma_vz, config.t_window), (0.002, 0.04, 0.02, 0.10))
+
     def test_the_grid_has_the_nominal_cell_so_it_can_be_repeated(self):
         self.assertIn(trials.TrialConfig("predict_once", trial=7), trials.grid())
 
