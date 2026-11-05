@@ -203,17 +203,32 @@ class CsvTest(unittest.TestCase):
 
     def test_what_the_fit_saw_compares_tightly(self):
         trials.write_csv([record(predicted_miss=0.02)], self.path)
-        trials.write_csv([record(predicted_miss=0.02 + 1e-6)], self.other)
+        trials.write_csv([record(predicted_miss=0.02 + 1e-4)], self.other)
         self.assertEqual(len(trials.csv_differences(self.path, self.other)), 1)
+
+    def test_a_crossing_extrapolated_from_an_early_touch_may_differ_a_little(self):
+        trials.write_csv([record(predicted_miss=0.02, timing_error=0.001)], self.path)
+        trials.write_csv([record(predicted_miss=0.02 + 2e-6, timing_error=0.001 + 2e-6)], self.other)
+        self.assertEqual(trials.csv_differences(self.path, self.other), [])
 
     def test_the_arm_may_differ_a_little_after_the_solve(self):
         trials.write_csv([record(miss_fingers=0.01, arm_arrival_error=0.006)], self.path)
         trials.write_csv([record(miss_fingers=0.01 + 2e-4, arm_arrival_error=0.006 + 2e-4)], self.other)
         self.assertEqual(trials.csv_differences(self.path, self.other), [])
 
+    def test_the_peak_speed_may_differ_with_the_plan(self):
+        trials.write_csv([record(peak_speed=0.96)], self.path)
+        trials.write_csv([record(peak_speed=0.963)], self.other)
+        self.assertEqual(trials.csv_differences(self.path, self.other), [])
+
+    def test_the_hold_time_may_differ_by_a_time_step(self):
+        trials.write_csv([record(hold_time=0.96)], self.path)
+        trials.write_csv([record(hold_time=0.961)], self.other)
+        self.assertEqual(trials.csv_differences(self.path, self.other), [])
+
     def test_the_arm_differing_by_more_than_that_is_reported(self):
         trials.write_csv([record(miss_fingers=0.01)], self.path)
-        trials.write_csv([record(miss_fingers=0.01 + 2e-3)], self.other)
+        trials.write_csv([record(miss_fingers=0.01 + 6e-3)], self.other)
         self.assertEqual(len(trials.csv_differences(self.path, self.other)), 1)
 
     def test_a_dropped_ball_may_come_to_rest_elsewhere(self):
@@ -223,8 +238,13 @@ class CsvTest(unittest.TestCase):
 
     def test_a_held_ball_has_to_end_in_the_same_place(self):
         trials.write_csv([record(caught=True, end_across=0.01)], self.path)
-        trials.write_csv([record(caught=True, end_across=0.012)], self.other)
+        trials.write_csv([record(caught=True, end_across=0.016)], self.other)
         self.assertEqual(len(trials.csv_differences(self.path, self.other)), 1)
+
+    def test_a_held_ball_may_end_a_little_elsewhere(self):
+        trials.write_csv([record(caught=True, end_fingers=0.01)], self.path)
+        trials.write_csv([record(caught=True, end_fingers=0.012)], self.other)
+        self.assertEqual(trials.csv_differences(self.path, self.other), [])
 
     def test_a_changed_outcome_is_reported(self):
         trials.write_csv([record(caught=True)], self.path)
