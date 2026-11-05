@@ -126,4 +126,7 @@ might remove most of the spread, but it wasn't tried.
 - B's nominal cell, 100 trials run twice, changed no outcome, solve count or adoption time. Nothing passed the tolerances above except the largest command step on one trial,
   by 0.0085 of what the plan allows, so that column compares within 0.02. That tolerance was set after seeing this, too. Each of B's solves starts from the last, but that
   didn't let the solver's spread grow past what A's has.
+- The robustness sweep's nominal A and B, 200 trials run again with `python robustness.py repeat`, passed the tolerances above with nothing
+  changed. Its 1000 trials that repeat cells of `results/approach_b.csv` matched in every outcome and measure compared, except where 7 dropped
+  balls came to rest, by under 1e-8 m.
 - The spec's risk table anticipated this: report means with confidence intervals, which the results do.
