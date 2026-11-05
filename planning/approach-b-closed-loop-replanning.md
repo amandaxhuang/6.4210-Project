@@ -5,7 +5,25 @@
 **Source:** `6.4210 project planning.pdf`, §4 "Approach B (closed-loop replanning)"
 **Builds on:** `planning/approach-a-predict-once.md` (the shared layer),
 `planning/week1-environment-and-constraints.md`, `results/catch_feasibility.md`
-**Status:** Draft for team review
+**Status:** Built through step 9 of §14 on branch `approach-a`. Results are in `results/approach_b.md` and `results/replan_timing.md`. The Week 4 sweep isn't run.
+
+**Result, 2026-11-05.** At the nominal cell B catches 90 of 100 against A's 68 and the baseline's 44, with 22 only B and none only A (p = 5e-7), and 91 against 70 on
+tosses the cell wasn't chosen from. The gap is 0, 22 and 56 tosses at σ_p = 0, 2 and 5 mm. Measuring it changed the design in the ways below, and most of the
+sections that follow are left as written for the record.
+
+- **Replanning is at about 22 Hz with a 45 ms delay, not 50 Hz.** Warm-started replans take longer than §9 expected. So they use 12 knots (§11.2, step 3), and
+  one solver works at a time, so the period equals the delay: a 20 ms period with a 45 ms delay isn't something a real system could do. `replan.py` and
+  `results/replan_timing.md` have the details.
+- **§8 rule 1 is wrong when there's a delay, and rule 2 doesn't follow from it.** A plan seeded at *t* from the commanded state and adopted at *t* + delay disagrees with the
+  old plan, which has moved on by then. Each replan instead starts from where the current plan will be at adoption, and a plan takes over when its trajectory starts. With no delay
+  this is rule 1.
+- **The first solve is free, as A's is**, not adopted at 0.100 + `tau_compute` as §3 has it. With a first solve charged even 45 ms, A falls from 68 to 15, so charging only B's would
+  end the comparison. This is the biggest assumption behind both approaches, and the paper has to say so.
+- **The deadline is on when a plan takes over**, which is what §7.3's `t_c` measures, rather than when its solve starts.
+- **§2's "exactly one file" can't hold literally.** B needs hooks in the shared layer that A and the baseline ignore, recorded in A's spec as §2 asks. `replan_timing.py` and
+  `replan_trials.py` are analysis scripts, as `catch_timing.py` and `trials.py` are for A.
+- **A single replan gets most of the gain.** At 2 mm one replan catches as many as any number of them, so the result supports looking again more than looking
+  continually. This bears on Q7 and on how the paper describes B.
 
 **Updated 2026-11-04:** all toss numbers now follow the 2.72 m/s toss in
 `results/catch_feasibility.md`. The replan deadline moved to 0.470 s and the longer window nearly
@@ -55,8 +73,8 @@ baseline, the metrics — exists to put a number on whether it is true.
 > *can* be corrected).
 
 This was first written at σ_p = 5 mm and σ_lat = 0.02 m/s. The cell moved on 2026-11-05, after seeing A's and the baseline's results and
-before B has run, so B's result played no part, but the paper has to say so. The grid chose it on trials 0 to 99, so running both approaches on
-trials 100 to 199 as well would keep the comparison apart from the tosses it was chosen on.
+before B ran, so B's result played no part, but the paper has to say so. The grid chose it on trials 0 to 99, so both approaches also ran on
+trials 100 to 199, to keep the comparison apart from the tosses it was chosen on.
 
 That last clause matters: a result where B beats A everywhere by the same margin would suggest
 the two differ for a reason other than information. **The predicted shape of the curve is part
@@ -176,9 +194,9 @@ its own metrics.
 | Name | Nominal | Note |
 |---|---|---|
 | `T_FIRST_SOLVE` | 0.100 s | Identical to A's `T_WINDOW`, by definition, not by coincidence — import it |
-| `REPLAN_PERIOD` | 0.020 s (50 Hz) | Set by the solver budget, §11 |
+| `REPLAN_PERIOD` | 0.045 s (about 22 Hz) | Set by the solver budget, §11. It equals `tau_compute`, with one solver at a time |
 | `REPLAN_DEADLINE` | 0.470 s | Set by the correction envelope, §7.3 |
-| `tau_compute` | measured p95 | §9 |
+| `tau_compute` | 0.045 s, the measured p95 rounded up | §9, and `results/replan_timing.md` |
 | `WARM_START` | `"tail"` | §7.2 |
 
 **`REPLAN_PERIOD` is not 200 Hz.** The proposal says "every control step", and Week 1 put the
@@ -186,7 +204,7 @@ control rate at 200 Hz. A full 24-knot nonlinear trajectory optimization at 200 
 something this project can run 4500 times, and pretending otherwise in simulation — where compute
 is free — would make B look better than any real system could be. §11 turns this into a measured
 decision with a fallback ladder, and §9 makes the cost visible in the results rather than hidden.
-The honest framing for the paper is **"replanning at 50 Hz with a modeled compute delay"**, not
+The honest framing for the paper is **"replanning at about 22 Hz with a modeled 45 ms compute delay"**, not
 "replanning every control step".
 
 ---
@@ -469,14 +487,15 @@ headline bar chart, is what shows the mechanism rather than just the outcome.
 
 | σ_p | A's frozen 1σ | B's final 1σ | A caught of 100, measured | Prediction |
 |---|---|---|---|---|
-| 0 mm | 0 | 0 | 91 | **No gap**: nothing to correct. The honest control. A's 9 misses have no motion |
-| 2 mm (nominal) | 1.15 cm | 0.08 cm | 68 | **A moderate gap.** A's 22 misses with a motion are what B could recover. This row said "small gap" before A was measured, because A's 1σ is inside the clearance |
-| 5 mm | 2.87 cm | 0.21 cm | 11 | **Large gap** — A is past the tolerance edge, B is well inside |
+| 0 mm | 0 | 0 | 91 | **No gap**: nothing to correct. The honest control. A's 9 misses have no motion. *Measured: B 91, no disagreements* |
+| 2 mm (nominal) | 1.15 cm | 0.08 cm | 68 | **A moderate gap.** A's 22 misses with a motion are what B could recover. This row said "small gap" before A was measured, because A's 1σ is inside the clearance. *Measured: B 90, recovering all 22* |
+| 5 mm | 2.87 cm | 0.21 cm | 11 | **Large gap** — A is past the tolerance edge, B is well inside. *Measured: B 67* |
 | 10 mm | 5.73 cm | 0.42 cm | not run | **Likely the largest gap**; A mostly fails, B is still well inside |
 | 20 mm | 11.5 cm | 0.85 cm | not run | A fails; B limited by the 4–6 cm correction envelope, so the gap narrows again |
 
 A's measured column is at σ_lat = 0.04 m/s, σ_vz = 0.02 m/s and a 0.10 s window, from `results/approach_a.md`. Only the 2 mm and 0 mm
-predictions were rewritten after seeing it. All of them are from before B has run.
+predictions were rewritten after seeing it, and all of them before B ran. The *Measured* notes were added after, from `results/approach_b.md`. B's three
+rows match the predicted shape; 10 and 20 mm, and the collapse at high toss noise below, wait for the Week 4 sweep.
 
 And against toss variability: the gap should grow with σ_lat up to the point where the required
 correction exceeds the envelope (σ_lat ≈ 0.08 m/s, where 2σ of landing shift is 9.2 cm against a
@@ -546,45 +565,45 @@ and both tests take an afternoon.
 ## 15. Open Questions
 
 1. **What is the measured solve time, and therefore `REPLAN_PERIOD`?** Answered by B6.
-   *Needed before: step 4.*
+   *Needed before: step 4.* **A warm 12-knot replan has a median of 22 ms and a p95 of 42 ms, so both are 45 ms.**
 2. **Is the first-order corrector (§11.2 step 4) needed?** Depends on B6. If it is, the paper's
    description of Approach B changes and the proposal's "replan at every control step" becomes
-   "correct at every control step, replan at 50 Hz". *Needed by: Week 3.*
+   "correct at every control step, replan at 50 Hz". *Needed by: Week 3.* **No: 12 knots was enough.**
 3. **Should the replan be covariance-gated** — only adopt a new target when the change exceeds the
    estimate's own uncertainty? Principled, and `est.cov` is already carried. May be
    over-engineering for a 0.37 s window. *Decide in Week 3 from whether `plan_drift` tracks the
-   true error or the noise.*
+   true error or the noise.* **Not needed: B lost no toss to A, so nothing suggests it is chasing noise.**
 4. **Do we report `tau_compute = 0` as a headline or an ablation?** §9 argues ablation, with the
-   measured value as the headline. *Needed by: Week 4.*
+   measured value as the headline. *Needed by: Week 4.* **`results/approach_b.md` does that.**
 5. **Does B need a different `CATCH_TILT` or terminal-pose regularizer** to keep consecutive
    solutions in the same IK branch? Only if §13's local-minimum risk materializes. *Needed by:
-   Week 3.*
+   Week 3.* **It didn't: warm and cold solutions agree to within 4.5 mrad.**
 6. **Consecutive cycles** (proposal: "consecutive successful cycles"). Inherited open question
    from `approach-a-predict-once.md` §17 Q6, and it is *more* interesting for B, since a continual
    planner is what makes cycle *n*+1 recoverable from a sloppy catch at cycle *n*. Still
-   unbudgeted. *Decide in Week 3.*
+   unbudgeted. *Decide in Week 3.* **Single catches only, for now, so the team should agree to it, and the paper should say so.**
 7. **Is 50 Hz replanning on a 100 Hz sensor defensible as "continual"?** §11.2 argues the sensor
    rate is the real ceiling. Make sure the paper says this plainly rather than leaving a reader
-   to notice it. *Needed by: Week 4 drafting.*
+   to notice it. *Needed by: Week 4 drafting.* **It is 22 Hz, so the solver is the ceiling here rather than the sensor. And one replan gets most of the gain: `results/approach_b.md`, finding 6.**
 
 ---
 
 ## 16. Acceptance Checklist
 
-- [ ] `RecursiveFit` matches `BallisticFit` to 1e-9 on the same data (B1)
-- [ ] Free-flight residuals checked for whiteness; result recorded
-- [ ] `results/replan_timing.md` written; `REPLAN_PERIOD` and `tau_compute` chosen from measurement (B6)
-- [ ] `replan.py` is the only new file; no changes to `catch.py` / `trials.py` beyond registering the policy
-- [ ] B catches a nominal, noiseless toss in Meshcat with `n_solves` ≥ 5 (B2)
-- [ ] **Equivalence test passes: B with replanning off reproduces A's trial record exactly (B3)**
-- [ ] Commanded position continuous across every adoption instant; no velocity step > `a_max·dt` (B4)
-- [ ] Warm-started and cold solutions agree within `POSITION_TOL` on a sample of trials
-- [ ] `tau_compute` configurable, defaulted to measured p95, sweepable (B5)
-- [ ] Close-command trigger latches once issued; `trigger_shift` recorded (§10)
-- [ ] `plan_drift`, `trigger_shift`, `n_solves`, `solve_failures`, solve times in every B trial record
-- [ ] Replan deadline sensitivity run at {0.35, 0.47, 0.55} s
-- [ ] Nominal cell: 100 paired trials, B vs. A vs. baseline, with McNemar's test (B7)
-- [ ] Result checked against §12's predicted shape; any mismatch diagnosed with the §12 decision tree
-- [ ] Success-vs-`plan_drift` figure produced (§11.3)
-- [ ] `planning/assumptions.md` updated: RLS over KF and why, `REPLAN_PERIOD`, `tau_compute`,
+- [x] `RecursiveFit` matches `BallisticFit` to 1e-9 on the same data (B1): bit for bit in practice
+- [x] Free-flight residuals checked for whiteness; result recorded (`results/replan_timing.md`)
+- [x] `results/replan_timing.md` written; `REPLAN_PERIOD` and `tau_compute` chosen from measurement (B6)
+- [ ] `replan.py` is the only new file; no changes to `catch.py` / `trials.py` beyond registering the policy: not achievable, so the hooks B needs are recorded in A's spec, and A's records don't change
+- [x] B catches a noiseless toss headless, and a noisy nominal toss with Meshcat running (B2). On a noiseless toss every replan is skipped because there's nothing to correct, so `n_solves` is 1 there; at the nominal cell its median is 6. No browser was connected, so nobody has watched the plan update yet: `python replan.py`
+- [x] **Equivalence test passes: B with replanning off reproduces A's trial record, within `trials.csv_differences`' tolerances (B3)**
+- [x] Commanded position continuous across every adoption instant; no velocity step > `a_max·dt` (B4), over all 1979 motions
+- [x] Warm-started and cold solutions agree within `POSITION_TOL` on a sample of trials: at most 4.5 mrad, ending the same distance from the target
+- [x] `tau_compute` configurable, defaulted to measured p95, sweepable (B5)
+- [x] Close-command trigger latches once issued; `trigger_shift` recorded (§10)
+- [x] `plan_drift`, `trigger_shift`, `n_solves`, `solve_failures`, solve times in every B trial record
+- [x] Replan deadline sensitivity run at {0.35, 0.47, 0.55} s
+- [x] Nominal cell: 100 paired trials, B vs. A vs. baseline, with McNemar's test (B7)
+- [x] Result checked against §12's predicted shape, at the three levels of σ_p run; the rest waits for the Week 4 sweep
+- [ ] Success-vs-`plan_drift` figure produced (§11.3): the numbers are a table in `results/approach_b.md`; the figure is Week 4's
+- [x] `planning/assumptions.md` updated: RLS over KF and why, `REPLAN_PERIOD`, `tau_compute`,
       the replan deadline, and the sensor-rate ceiling on useful replanning

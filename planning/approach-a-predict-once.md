@@ -42,9 +42,18 @@ and `planning/assumptions.md`.
 - **§14's expectation about 0.15 s holds at that limit.** 0.15 s loses to 0.10 s in all six cells compared.
 - **Q3 is answered: the nominal cell is now σ_p = 2 mm, σ_lat = 0.04 m/s, σ_vz = 0.02 m/s, with the window staying at 0.10 s.** A
   catches 68 of 100, the baseline 44 and a perfect sensor 91, and on tosses the grid never used A catches 70 and the baseline 32. The
-  cell was chosen after seeing A's and the baseline's results, before B has run, so the paper has to say so. See `results/approach_a.md`.
+  cell was chosen after seeing A's and the baseline's results, before B ran, so the paper has to say so. See `results/approach_a.md`.
 - **Q5 and Q7 are answered:** the tilt limit stays at 25°, and 1 ms is small enough. See `results/catch_timing.md`.
 - **Q6: single catches only.** This departs from the proposal, so the team should agree to it, and the paper should say so.
+- **Approach B added hooks to the shared layer, as B's §2 asks to record here.** `plan_reach` and `CatchPlanner.plan` take a warm start and a
+  knot count; `CatchPlan` keeps its `Motion`; `intercept` takes the least time to reach a target, since a moving arm needn't start from rest;
+  a plan takes over when its trajectory starts; a policy may name its estimator; `peak_speed` measures from the first motion; and the
+  controller records its adoption times and first close decision. None changes what A or the baseline do: `trials.py repeat` still shows 0
+  differences, and the feasibility report is byte for byte the same.
+- **Approach B now exists and beats A**, 90 to 68 at the nominal cell. It depends on §5.4's free first solve just as A does: charged 45 ms, A falls to 15.
+  See `results/approach_b.md`.
+- **`arm_arrival_error` isn't the tracker alone**, as §13.1 first said. Every plan stops 5.2 mm from its target, at the corner of
+  `POSITION_TOL`'s box. No catch result changes, only what that number means. See `results/replan_timing.md`.
 
 ---
 
@@ -622,7 +631,7 @@ One row per trial. Everything here is cheap to record and expensive to re-run fo
 | `miss_vertical` (m) | pinch-point height error at the same instant |
 | `timing_error` (s) | actual arrival at `Z_CATCH` − planned `t_catch` |
 | `predicted_miss` (m) | ‖p_catch_estimated − p_catch_true‖ — the estimator's error alone |
-| `arm_arrival_error` (m) | ‖pinch at `t_catch` − p_catch_planned‖ — the tracker's error alone |
+| `arm_arrival_error` (m) | ‖pinch at `t_catch` − p_catch_planned‖ — the tracker's error, combined with the 5.2 mm from the target that every plan stops at (`results/replan_timing.md`) |
 | `solve_ok`, `solve_time`, `n_solves`, `fit_rank_deficient`, `intercept_rejected`, `toss_infeasible` | Diagnostics and fairness audit |
 | `v_release_true`, `p_release_true` | What the toss actually did, for attributing failures |
 
@@ -727,7 +736,7 @@ predicting it.
 |---|---|---|
 | Estimator (A, frozen at 0.10 s) | **1.15 cm** 1σ per horizontal axis | `feasibility.prediction_error()` on the fit's 10 samples. The median predicted miss is 1.5 cm |
 | Arrival timing | 4.3 ms 1σ, or 1.3 cm of ball travel | Measured, against a window of about 22 ms, 2 ms of it on the pad. At 2.99 m/s |
-| Tracking | 0.50 cm median, 0.95 cm worst | Measured on the 90 tosses with a motion. A noiseless catch has 0.55 cm |
+| Arrival | 0.50 cm median, 0.95 cm worst | Measured on the 90 tosses with a motion, and 0.55 cm on a noiseless catch. It combines two errors that partly cancel: the plan stops 0.52 cm from its target, and the arm is about 0.7 cm from the plan (`results/replan_timing.md`) |
 | Toss variability, σ_lat = 0.04 m/s | 2.3 cm of landing shift | Not an error for A, because the noise goes on before the first observation and the fit sees it. It is what the baseline faces, at a median predicted miss of 2.4 cm, and it costs A reach: a perfect sensor has no motion for 9 tosses, and catches the other 91 |
 | Gripper response spread | Not a random term now | §10's 8 ms spread is looked up by command phase (`catch.close_command_time`) |
 | **Tolerance to beat** | **about ±2 cm** along the closing axis, ±2.5 cm across the pads | `results/catch_timing.md`, one axis at a time with perfect timing, so real errors, which combine, have less room. §2's ±1.6 cm is the pad clearance |
@@ -830,7 +839,7 @@ the harness are written costs days.
 - [x] `plan_reach` and friends moved out of `feasibility.py`; `feasibility.py` output unchanged
 - [x] `sensing.BallSensor` publishes at 100 Hz, one noise draw per sample, seeded per trial
 - [x] `BallisticFit` matches `feasibility.prediction_error()` within 10% over 1000 draws (A1)
-- [ ] `CatchController` runs all three policies through one code path; `policy_calls` recorded
+- [x] `CatchController` runs all three policies through one code path; `policy_calls` recorded
 - [x] Baseline catches a nominal, noiseless toss in Meshcat (§11 self-test)
 - [x] `PredictOncePolicy` catches a nominal, noiseless toss
 - [x] Close-trigger lead sweep peaks within 10 ms of the §10 arithmetic (A3): a plateau rather than a peak, which

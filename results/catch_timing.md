@@ -44,8 +44,10 @@ sections 1 and 7, which don't involve a catch motion, was re-run at that limit; 
 7. **The ball comes in 36 degrees off the finger axis.** The gripper is 23.7 degrees from up, close to the 25 degree limit,
    and leans away from the ball's approach. So a timing error also moves the ball across the pads: it ends +0.76 cm
    across when +1.47 cm along the fingers. Finding 15 tests a tighter limit.
-8. **Tracking: 0.55 cm at arrival, and the driver stays `position_only`** (section 4). On noisy targets the arrival
-   error is 0.5 cm at the median and at most 0.97 cm (section 5).
+8. **Arrival: 0.55 cm from the target, and the driver stays `position_only`** (section 4). On noisy targets the arrival
+   error is 0.5 cm at the median and at most 0.97 cm (section 5). This isn't tracking alone, as an earlier version of this finding said.
+   The plan itself stops 0.52 cm from its target, at the corner of `POSITION_TOL`'s box, and the arm is 0.71 cm from the plan at that
+   moment, and these partly cancel: `results/replan_timing.md`.
    - The 2.03 cm peak is at the hand-off, before the catch motion has done anything: the arm hasn't settled from the
      brake.
    - Joint 6 sits at its torque limit from about 0.11 to 0.18 s, where the simulator clips it silently. By 0.40 s it has
@@ -76,7 +78,7 @@ sections 1 and 7, which don't involve a catch motion, was re-run at that limit; 
     is there to correct: 2.87 cm and about 11 ms at 5 mm, against 1.13 cm and 3.8 ms from the toss. The baseline
     falls away as the toss gets noisier, to 29 of 60 at 0.04 m/s and 9 at 0.08 m/s. This bears on spec Q3 and on the
     proposal's "how much each approach gains from sensing": here the gain is negative for Approach A. The 100-trial grid in
-    `results/approach_a.md` agrees, at 80 for the baseline against 72 and 16. Approach B hasn't been run.
+    `results/approach_a.md` agrees, at 80 for the baseline against 72 and 16. Approach B's results are in `results/approach_b.md`.
 13. **sigma lateral = 0.08 m/s doesn't defeat the arm, as the specs expected.** With a perfect sensor Approach A catches 40
     of 60, which is every toss it found a motion for. The other 20 (33%, past the spec's 5% threshold for a finding) have no
     motion, consistent with the correction envelope but not checked one by one. Approach B's prediction that its gap

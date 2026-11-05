@@ -3,7 +3,7 @@
 What the simulation assumes, why, and where the evidence is. This is the document the paper's methods
 section gets written from. Week 1 §8 listed the provisional values; this records what they became.
 
-**Status:** started 2026-11-04 with Approach A's shared layer. Rows marked *open* need a team decision.
+**Status:** started 2026-11-04 with Approach A's shared layer, with Approach B added 2026-11-05. Rows marked *open* need a team decision.
 
 ## The scene
 
@@ -31,6 +31,7 @@ section gets written from. Week 1 §8 listed the provisional values; this record
 |---|---|---|
 | Acceleration limit on catch motions | Brake level, 13–23 rad/s² | The model has no acceleration limits and Drake enforces none. **State this in the paper as an assumption.** At swing-level acceleration the arm arrives far too late: `results/catch_feasibility.md` |
 | Joint torque during the catch | Joint 6 reaches its limit for about 70 ms early in a noiseless motion, and for up to 163 ms on noisy tosses at the nominal cell | Drake clips torque silently. On a noiseless catch it recovers well before arrival, and noisy arrivals are as good, 0.49 cm at the median: `results/catch_timing.md` |
+| Where a plan stops | 5.2 mm from its target, at (+3, +3, +3) mm, in every plan of every approach | That is the corner of `POSITION_TOL`'s +-3 mm box: the smoothness cost pushes the end as far as the constraint allows. With about 0.7 cm of tracking error, the reported arrival error is 0.3 to 0.8 cm. It also limits what a better fit can gain: `results/replan_timing.md` |
 | Joint speed during the catch | Planned at 0.85 × rated (`catch.PLAN_SPEED_LIMIT`). Measured peak 0.96 × rated on a noiseless catch, and up to 1.11 × on noisy tosses at 0.10 s | Drake doesn't enforce the rating either. **State this in the paper.** At the toss's 0.986 × rated, 61 of 68 catches at one cell went more than 5% over, so the grid was re-run at 0.85. The limit is on the plan; the rest is tracking overshoot, which nothing stops: `results/approach_a.md` |
 | Catch tilt | Gripper within 25° of up | The nominal catch uses 23.8°, so the ball comes in about 36° off the finger axis. Spec Q5: tighter limits lose reach. At 15° the noiseless catch has no motion, and noisy tosses catch 5 of 60 against 42 at 25°. `results/catch_timing.md` |
 | Close latency | 30 ms, decision to command | Proposal's "small, fixed delta" |
@@ -50,10 +51,23 @@ section gets written from. Week 1 §8 listed the provisional values; this record
 | When flight starts | The commanded release time | Spec §7.1. The robot knows when it opened its fingers |
 | Controller rate | 200 Hz, ticking 1 ms after each 5 ms mark | So a tick sees the sensor sample from the same millisecond; on the same tick it would see the previous one |
 
+## Approach B
+
+| Quantity | Value | Basis |
+|---|---|---|
+| Estimator | Recursive least squares, not a Kalman filter | Spec §6.1. The flight is ballistic, with 2.1e-15 m of residual and white noise, so there's no process noise to model, and a tuning knob would be a difference from A with no basis. It matches A's fit bit for bit at the decision: `results/replan_timing.md` |
+| First solve | Takes no time and is identical to A's | **State this in the paper: it's the biggest assumption behind A and B alike.** A cold first solve really takes a median of about 140 ms and a p95 of about 320 ms on a laptop. Charged only 45 ms, A falls from 68 to 15 of 100, because the arm has about 40 ms of margin at 0.10 s. The baseline's plan needs no measurements, so it could really be computed in advance: `results/approach_b.md` |
+| Replans | Warm-started from the current plan's tail, 12 knots. A failed one keeps the current plan | Spec §7.2 and §11.2. Warm and cold solutions agree. 12 knots catches the same as 24 on the same schedule: `results/approach_b.md` |
+| `tau_compute` | 45 ms, the p95 of a warm 12-knot replan run one at a time, rounded up | Spec §9. Parallel workers double it. A laptop and a general-purpose solver, so **report it as what it is.** 0 and 90 ms are reported beside it |
+| Replan period | 45 ms, about 22 Hz | One solver at a time: a replan has to start from the plan the last one produced, so it can't start before that one has finished. **Say "about 22 Hz with a 45 ms delay" in the paper**, not "every control step" or the spec's 50 Hz. Here the solver limits the rate; the 100 Hz sensor would limit it next |
+| Replan deadline | A new plan takes over by 0.47 s after release | Spec §7.3. At 5 mm a deadline of 0.35, 0.47 and 0.55 s catches 66, 67 and 67 |
+| Small corrections | Skipped under 2 mm and 0.67 ms | Spec §7.3, with timing added: 1 ms of arrival is 3 mm of ball travel |
+| After a failed first solve | Retried cold, charged 3 × `tau_compute` | A cold solve has about 2.3 times the p95 of a warm one. This rarely helps: the arm has already lost that time |
+
 ## The driver
 
 **Decision: keep `control_mode: position_only`.** Spec §14 asks for a change if tracking error is a
-significant fraction of the tolerance. It is 0.55 cm at arrival, against measured sideways tolerances of
+significant fraction of the tolerance. The arm is 0.71 cm from its plan on arrival, against measured sideways tolerances of
 about ±2 cm and an estimator error of 1.15 cm at the nominal σ_p = 2 mm. It builds up while the plan decelerates into
 the catch and takes about 200 ms to decay afterward, and the noiseless catch works with it. At the nominal toss noise a
 perfect sensor catches all 91 tosses it has a motion for, so tracking alone isn't losing catches. A new driver would
@@ -98,4 +112,7 @@ might remove most of the spread, but it wasn't tried.
 - A4's "bit-identical" holds within 1e-9 for the flight and for the whole baseline run. It can't hold for Approach A's
   arm after the solve.
 - A5's "reproduces the CSV exactly" can't either; the table above is what it means here.
+- B's nominal cell, 100 trials run twice, changed no outcome, solve count or adoption time. Nothing passed the tolerances above except the largest command step on one trial,
+  by 0.0085 of what the plan allows, so that column compares within 0.02. That tolerance was set after seeing this, too. Each of B's solves starts from the last, but that
+  didn't let the solver's spread grow past what A's has.
 - The spec's risk table anticipated this: report means with confidence intervals, which the results do.
