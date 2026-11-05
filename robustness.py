@@ -10,11 +10,11 @@ in pairs.
 
 runs every cell and writes results/robustness.csv and results/robustness.md.  Text
 above the marker in the .md is kept, so interpretation can live there.  Naming "report"
-only rewrites the tables, and naming "repeat" runs the nominal cell again and compares it
-with the saved rows.
+only rewrites the tables, naming "repeat" runs the nominal cell again and compares it
+with the saved rows, and naming "extend" runs only the trials the saved rows don't have.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import math
 from pathlib import Path
 import sys
@@ -38,7 +38,7 @@ APPROACHES = {BASELINE: "baseline", A: "Approach A", B: "Approach B"}
 
 NOMINAL = dict(sigma_p=sensing.SIGMA_P, sigma_lat=ReplanConfig.sigma_lat, sigma_vz=ReplanConfig.sigma_vz)
 SIGMAS_P = (0.0, 0.002, 0.005, 0.010, 0.020)  # m
-SIGMAS_LAT = (0.0, 0.01, 0.02, 0.04, 0.08)  # m/s
+SIGMAS_LAT = (0.0, 0.01, 0.02, 0.04, 0.08, 0.12)  # m/s; 0.12 added after 0.08 didn't show B's spec's predicted collapse
 SIGMAS_VZ = (0.0, 0.02, 0.05)  # m/s
 ASSUMED_LATENCY = 0.03  # s; sweeping the real latency with the trigger told each value would change nothing
 LATENCIES = (0.0, 0.02, 0.03, 0.05)  # s
@@ -269,6 +269,29 @@ def run():
     write_report(results, REPORT_PATH)
 
 
+def _settings(trial) -> tuple:
+    """Everything that makes a trial what it is, from its config or its saved row."""
+    return tuple(getattr(trial, f.name) for f in fields(ReplanConfig))
+
+
+def missing(configs: list[ReplanConfig], saved: list[ReplanResult]) -> list[ReplanConfig]:
+    """The configs no saved row has run."""
+    done = {_settings(r) for r in saved}
+    return [c for c in configs if _settings(c) not in done]
+
+
+def extend():
+    """Run only the trials the saved rows don't have, then write them all in grid order."""
+    saved = {_settings(r): r for r in replan_trials.read_results(CSV_PATH)}
+    configs = grid()
+    new = missing(configs, list(saved.values()))
+    ran = dict(zip(map(_settings, new), trials.sweep(new, runner=replan_trials.run_trial))) if new else {}
+    results = [saved[key] if key in saved else ran[key] for key in map(_settings, configs)]
+    trials.write_csv(results, CSV_PATH)
+    print(f"{len(new)} trials run, {len(results)} written to {CSV_PATH}", flush=True)
+    write_report(results, REPORT_PATH)
+
+
 def repeat():
     """Re-run the nominal cell for A and B."""
     configs = cells((A, B))
@@ -281,5 +304,7 @@ if __name__ == "__main__":
         write_report(replan_trials.read_results(CSV_PATH), REPORT_PATH)
     elif sys.argv[1:] == ["repeat"]:
         repeat()
+    elif sys.argv[1:] == ["extend"]:
+        extend()
     else:
         run()

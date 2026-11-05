@@ -1,10 +1,15 @@
 """The robustness sweep's cells, and how its tables pick them out."""
 
+from dataclasses import fields
+from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
 import catch
+import figures
 import robustness
 from robustness import A, B, BASELINE
 import sensing
@@ -106,6 +111,30 @@ class TablesTest(unittest.TestCase):
                         v_release_true_x=plan.v_release[0], v_release_true_y=plan.v_release[1], v_release_true_z=plan.v_release[2])
         start = catch.shared_kinematics().pinch(plan.q_traj.value(plan.t_release + robustness.toss.BRAKE).ravel())
         self.assertAlmostEqual(robustness.movement_needed([r])[0], np.linalg.norm(p - start), places=6)
+
+
+class ExtendTest(unittest.TestCase):
+    def test_only_the_trials_not_saved_are_run(self):
+        configs = robustness.cells((A, B), range(2)) + robustness.cells((A, B), range(2), sigma_lat=0.12)
+        saved = [result_row(**{f.name: getattr(c, f.name) for f in fields(c)}) for c in configs[:4]]
+        self.assertEqual(robustness.missing(configs, saved), configs[4:])
+
+    def test_a_saved_row_with_any_setting_different_is_not_the_same_trial(self):
+        config = robustness.cells((B,), range(1))[0]
+        saved = result_row(**{**{f.name: getattr(config, f.name) for f in fields(config)}, "deadline": 0.35})
+        self.assertEqual(robustness.missing([config], [saved]), [config])
+
+
+class FiguresTest(unittest.TestCase):
+    def test_every_figure_is_written(self):
+        results = [result_row(approach=c.approach, trial=c.trial, sigma_p=c.sigma_p, sigma_lat=c.sigma_lat, sigma_vz=c.sigma_vz, latency=c.latency,
+                              obs_mode=c.obs_mode, caught=c.trial % 3 == 0, plans_adopted=3, plan_drift=0.001 * (c.trial % 40))
+                   for c in robustness.grid() if c.trial % 100 < 8]
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(figures, "OUT", Path(folder)):
+            paths = figures.make_all(results)
+            self.assertEqual(len(paths), 6)
+            for path in paths:
+                self.assertGreater(path.stat().st_size, 5000)
 
 
 if __name__ == "__main__":
