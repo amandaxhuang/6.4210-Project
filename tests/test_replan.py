@@ -5,12 +5,14 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+import unittest.mock
 
 import numpy as np
 
 import catch
 import planning_core
 import replan
+import replan_trials
 import sensing
 import toss
 import trials
@@ -265,6 +267,64 @@ class ReplanningRunTest(unittest.TestCase):
     def test_the_first_close_decision_is_kept_for_the_record(self):
         t_close = catch.close_command_time(self.b.plans[0].t_catch)
         self.assertAlmostEqual(self.controller.t_close_first, t_close, places=6)
+
+
+def row(**fields):
+    defaults = dict(approach="replan", trial=0, seed=catch.SEED_ROOT, t_window=0.10, n_obs=10, sigma_p=0.002, sigma_v=0.05,
+                    obs_mode="position_only", sigma_lat=0.04, sigma_vz=0.02, latency=0.03, caught=True, caught_on_pad=False,
+                    contact=True, hold_time=1.0, miss_horizontal=0.01, miss_vertical=0.0, miss_closing=0.0, miss_fingers=0.0,
+                    miss_across=0.0, end_fingers=0.015, end_across=0.0, timing_error=0.001, predicted_miss=0.02,
+                    arm_arrival_error=0.006, peak_speed=0.96, solve_ok=True, solve_time=0.3, wall_time=3.0, n_solves=1,
+                    policy_calls=320, plans_adopted=1, fit_rank_deficient=False, intercept_rejected=False, p_release_true_x=0.8,
+                    p_release_true_y=0.0, p_release_true_z=0.77, v_release_true_x=-0.33, v_release_true_y=-0.53,
+                    v_release_true_z=2.65, tau_compute=replan.TAU_COMPUTE, period=replan.TAU_COMPUTE,
+                    deadline=replan.REPLAN_DEADLINE, n_knots=replan.REPLAN_KNOTS, plan_drift=0.01, trigger_shift=0.001)
+    return replan_trials.ReplanResult(**{**defaults, **fields})
+
+
+class TrialHarnessTest(unittest.TestCase):
+    def test_a_config_passes_its_settings_to_the_policy(self):
+        config = replan_trials.ReplanConfig("replan", tau_compute=0.04, period=0.08, deadline=0.35, n_knots=24)
+        policy = config.policy_factory()(RecordingPlanner())
+        self.assertEqual((policy.tau_compute, policy.period, policy.deadline, policy.n_knots), (0.04, 0.08, 0.35, 24))
+
+    def test_the_other_approaches_are_the_ones_approach_a_ran(self):
+        policy = replan_trials.ReplanConfig("predict_once", t_window=0.125).policy_factory()(RecordingPlanner())
+        self.assertIsInstance(policy, catch.PredictOncePolicy)
+        self.assertEqual(policy.t_window, 0.125)
+        policy = replan_trials.ReplanConfig("open_loop").policy_factory()(RecordingPlanner())
+        self.assertIsInstance(policy, catch.OpenLoopPolicy)
+
+    def test_a_charged_solve_plans_from_when_it_would_finish(self):
+        planner = RecordingPlanner()
+        policy = replan_trials.ReplanConfig("predict_once_charged", tau_compute=TAU).policy_factory()(planner)
+        self.assertIsNone(policy.update(catch.T_WINDOW - 0.001, estimate(), Q, V, None))
+        policy.update(FIRST, estimate(), Q, V, None)
+        self.assertAlmostEqual(planner.calls[0]["t_rel"], FIRST + TAU)
+        self.assertIsNone(policy.update(FIRST + 0.005, estimate(), Q, V, None))
+
+    def test_a_repeat_compares_rows_with_the_same_settings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            saved = Path(folder) / "saved.csv"
+            trials.write_csv([row(trial=4, tau_compute=0.0, caught=False), row(trial=4)], saved)
+            config = replan_trials.ReplanConfig("replan", trial=4)
+            with unittest.mock.patch.object(trials, "sweep", return_value=[row(trial=4)]):
+                self.assertEqual(trials.repeat_check([config], saved), [])
+
+    def test_a_row_is_compared_with_a_on_the_same_tosses(self):
+        a = [row(approach="predict_once", trial=t, caught=t < 2) for t in range(4)]
+        b = [row(trial=t, caught=t < 3) for t in range(4)]
+        table = "\n".join(replan_trials.summary_table(a + b))
+        self.assertIn("1 / 0, p = 1", table)
+
+    def test_the_head_to_head_sorts_tosses_by_what_a_did(self):
+        a = [row(approach="predict_once", trial=0), row(approach="predict_once", trial=1, caught=False),
+             row(approach="predict_once", trial=2, caught=False, solve_ok=False)]
+        b = [row(trial=0, caught=False), row(trial=1), row(trial=2, caught=False, solve_ok=False)]
+        table = replan_trials.head_to_head(a + b)
+        self.assertEqual(table[2], "| A caught | 1 | 0 | 1 | 0 |")
+        self.assertEqual(table[3], "| A had a motion and missed | 1 | 1 | 0 | 0 |")
+        self.assertEqual(table[4], "| A had no motion | 1 | 0 | 0 | 1 |")
 
 
 class CloseLatchTest(unittest.TestCase):

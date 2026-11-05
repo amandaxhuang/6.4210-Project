@@ -52,9 +52,10 @@ SAME_CROSSING = 1e-5
 SAME_AFTER_SOLVE = 5e-3
 CROSSING_COLUMNS = ("timing_error", "predicted_miss")
 AFTER_SOLVE_COLUMNS = ("hold_time", "miss_horizontal", "miss_vertical", "miss_closing", "miss_fingers", "miss_across",
-                       "arm_arrival_error", "end_fingers", "end_across", "peak_speed")
+                       "arm_arrival_error", "end_fingers", "end_across", "peak_speed", "command_speed", "command_step",
+                       "tracking_peak")
 RESTING_PLACE_COLUMNS = ("end_fingers", "end_across")
-WALL_CLOCK_COLUMNS = ("solve_time", "wall_time")
+WALL_CLOCK_COLUMNS = ("solve_time", "wall_time", "solve_time_median", "solve_time_p95")
 
 # The grid the nominal cell is chosen from.
 GRID_WINDOWS = {0.10: [0.0, 0.002, 0.003, 0.005], 0.125: [0.0, 0.002, 0.003, 0.005], 0.15: [0.0, 0.003]}  # s: sigma_p in m
@@ -77,6 +78,11 @@ class TrialConfig:
     latency: float = catch.T_LATENCY
     assumed_latency: float | None = None  # what the trigger allows for, if not the latency itself
     t_window: float = catch.T_WINDOW  # how long Approach A observes before deciding
+
+    def policy_factory(self):
+        if self.approach == "predict_once":
+            return lambda planner: catch.PredictOncePolicy(planner, self.t_window)
+        return catch.POLICIES[self.approach]
 
 
 @dataclass
@@ -136,18 +142,17 @@ def release_state(run) -> tuple[np.ndarray, np.ndarray]:
     return log.ball_p[i] - v0 * tau - 0.5 * sensing.GRAVITY * tau**2, v0
 
 
-def _policy_factory(config: TrialConfig):
-    if config.approach == "predict_once":
-        return lambda planner: catch.PredictOncePolicy(planner, config.t_window)
-    return catch.POLICIES[config.approach]
+def simulate(config: TrialConfig) -> tuple[catch.CatchRun, float]:
+    """Simulate one trial.  Returns it, and how long that took."""
+    start = time.perf_counter()
+    run = catch.simulate_catch(config.policy_factory(), sigma_p=config.sigma_p, sigma_v=config.sigma_v,
+                               obs_mode=config.obs_mode, latency=config.latency, assumed_latency=config.assumed_latency,
+                               sigma_lat=config.sigma_lat, sigma_vz=config.sigma_vz, trial=config.trial)
+    return run, time.perf_counter() - start
 
 
 def run_trial(config: TrialConfig) -> TrialResult:
-    start = time.perf_counter()
-    run = catch.simulate_catch(_policy_factory(config), sigma_p=config.sigma_p, sigma_v=config.sigma_v,
-                               obs_mode=config.obs_mode, latency=config.latency, assumed_latency=config.assumed_latency,
-                               sigma_lat=config.sigma_lat, sigma_vz=config.sigma_vz, trial=config.trial)
-    return record(config, run, time.perf_counter() - start)
+    return record(config, *simulate(config))
 
 
 def record(config: TrialConfig, run: catch.CatchRun, wall_time: float) -> TrialResult:
@@ -234,24 +239,25 @@ def csv_differences(path_a: Path, path_b: Path) -> list[str]:
     return _row_differences(read_csv(path_a), read_csv(path_b))
 
 
-def _config_key(row: dict[str, str]) -> tuple:
+def _config_key(row: dict[str, str], config_type: type = TrialConfig) -> tuple:
     def value(cell):
         try:
             return float(cell)
         except ValueError:
             return cell
 
-    return tuple(value(row[f.name]) for f in fields(TrialConfig))
+    return tuple(value(row[f.name]) for f in fields(config_type))
 
 
-def repeat_check(configs: list[TrialConfig], saved_path: Path = CSV_PATH) -> list[str]:
+def repeat_check(configs: list[TrialConfig], saved_path: Path = CSV_PATH, runner=run_trial) -> list[str]:
     """Spec deliverable A5: run these trials again and compare them with the saved rows."""
     with tempfile.TemporaryDirectory() as folder:
         rerun = Path(folder) / "rerun.csv"
-        write_csv(sweep(configs), rerun)
+        write_csv(sweep(configs, runner=runner), rerun)
         fresh = read_csv(rerun)
-    saved = {_config_key(row): row for row in read_csv(saved_path)}
-    return _row_differences([saved[key] for key in map(_config_key, fresh) if key in saved], fresh)
+    config_type = type(configs[0])
+    saved = {_config_key(row, config_type): row for row in read_csv(saved_path)}
+    return _row_differences([saved[key] for key in (_config_key(row, config_type) for row in fresh) if key in saved], fresh)
 
 
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:

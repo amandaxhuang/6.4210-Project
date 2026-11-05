@@ -23,11 +23,11 @@ from utils.viz import keep_meshcat_open
 
 T_FIRST_SOLVE = catch.T_WINDOW  # the same instant as Approach A's only solve, by definition
 REPLAN_KNOTS = 12
-TAU_COMPUTE = 0.050  # s
+TAU_COMPUTE = 0.045  # s; the p95 of a warm-started replan, rounded up to a control period
 REPLAN_DEADLINE = 0.470  # s after release; the last time a new plan may take over
 T_MIN_HORIZON = 0.02  # s; a moving arm can't be told anything useful closer to the catch than this
 
-# With no plan to warm-start from, a solve takes this many times as long.
+# With no plan to warm-start from, a solve takes this many times as long, by p95, rounded up.
 COLD_DELAY_FACTOR = 3
 
 # Corrections smaller than these aren't worth a solve, or the disturbance of a new plan.

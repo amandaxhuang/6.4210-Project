@@ -1,0 +1,285 @@
+"""Approach B against Approach A and the baseline, on the same tosses.
+
+Trial n is the same toss with the same sensor noise under every approach, so each
+row can be compared with Approach A in pairs.
+
+    HEADLESS=1 python replan_trials.py
+
+runs the nominal cell and the checks around it, and writes results/approach_b.csv
+and results/approach_b.md.  Text above the marker in the .md is kept, so
+interpretation can live there.
+
+    HEADLESS=1 python replan_trials.py repeat
+
+runs B's nominal cell again and compares it with the saved rows.
+"""
+
+from dataclasses import asdict, dataclass, replace
+import math
+from pathlib import Path
+import sys
+
+import numpy as np
+
+import catch
+import replan
+import trials
+
+N_TRIALS = trials.N_TRIALS
+CSV_PATH = Path(__file__).parent / "results" / "approach_b.csv"
+REPORT_PATH = Path(__file__).parent / "results" / "approach_b.md"
+
+SIGMAS_P = (0.0, 0.002, 0.005)  # m: section 12's prediction has a shape, so one cell isn't enough
+NO_DELAY_PERIOD = 0.020  # s; the spec's 50 Hz, with a computer that takes no time
+
+
+@dataclass(frozen=True)
+class ReplanConfig(trials.TrialConfig):
+    """One trial of any approach.  The settings below only matter to Approach B."""
+
+    tau_compute: float = replan.TAU_COMPUTE
+    period: float = replan.TAU_COMPUTE
+    deadline: float = replan.REPLAN_DEADLINE
+    n_knots: int = replan.REPLAN_KNOTS
+
+    def policy_factory(self):
+        if self.approach == "replan":
+            return lambda planner: replan.ReplanPolicy(planner, self.tau_compute, self.period, self.deadline, self.n_knots)
+        if self.approach == "predict_once_charged":
+            return lambda planner: ChargedPredictOnce(planner, self.tau_compute)
+        return super().policy_factory()
+
+
+class ChargedPredictOnce(catch.PredictOncePolicy):
+    """Approach A, if its one solve took tau_compute rather than no time at all."""
+
+    def __init__(self, planner, tau_compute):
+        super().__init__(planner)
+        self.tau_compute = tau_compute
+
+    def update(self, t_rel, est, q_cmd, qdot_cmd, plan):
+        if self.decided or t_rel < self.t_window:
+            return None
+        return super().update(t_rel + self.tau_compute, est, q_cmd, qdot_cmd, plan)
+
+
+@dataclass
+class ReplanResult(trials.TrialResult):
+    """One row of the record, with what section 11.3 of the spec adds to it."""
+
+    tau_compute: float = 0.0
+    period: float = 0.0
+    deadline: float = 0.0
+    n_knots: int = 0
+    solves_skipped: int = 0
+    solve_failures: int = 0
+    replans_rejected: int = 0  # the fit's intercept wasn't believable
+    solve_time_median: float = math.nan
+    solve_time_p95: float = math.nan
+    plan_drift: float = math.nan  # how far the target moved from the first plan to the last
+    trigger_shift: float = math.nan  # how far the close decision moved
+    command_speed: float = math.nan  # section 8: the largest commanded speed, of rated
+    command_step: float = math.nan  # section 8: the largest step in commanded velocity, of what the plans allow
+    tracking_peak: float = math.nan  # the largest joint error during the motion, rad
+    adoption_times: str = ""  # s after release
+
+
+def tracking_peak(run: catch.CatchRun) -> float:
+    solved = [p for p in run.plans if p.solve_ok]
+    if not solved:
+        return math.nan
+    log = run.log
+    during = (log.t >= solved[0].q_traj.start_time()) & (log.t <= solved[-1].t_catch)
+    return float(np.abs(log.q_cmd[during] - log.arm_q[during]).max())
+
+
+def run_trial(config: ReplanConfig) -> ReplanResult:
+    run, wall_time = trials.simulate(config)
+    base = trials.record(config, run, wall_time)
+    controller, policy = run.controller, run.controller.policy
+    speed, step = replan.command_steps(run)
+    row = dict(tau_compute=config.tau_compute, period=config.period, deadline=config.deadline, n_knots=config.n_knots,
+               command_speed=speed, command_step=step, tracking_peak=tracking_peak(run))
+    t_release = run.toss_plan.t_release
+    row["adoption_times"] = ";".join(f"{t - t_release:.4f}" for t in controller.adoption_times)
+    if isinstance(policy, replan.ReplanPolicy):
+        solved = [p for p in run.plans if p.solve_ok]
+        base = replace(base, n_solves=policy.n_solves, solve_time=float(sum(policy.solve_times)))
+        row.update(solves_skipped=policy.solves_skipped, solve_failures=policy.solve_failures,
+                   replans_rejected=policy.intercepts_rejected, solve_time_median=float(np.median(policy.solve_times)),
+                   solve_time_p95=float(np.percentile(policy.solve_times, 95)))
+        if solved:
+            row["plan_drift"] = float(np.linalg.norm(solved[-1].p_catch - solved[0].p_catch))
+            row["trigger_shift"] = float(controller.t_close - controller.t_close_first)
+    return ReplanResult(**asdict(base), **row)
+
+
+def cell(approach: str, trial_numbers, **settings) -> list[ReplanConfig]:
+    return [ReplanConfig(approach, trial=t, **settings) for t in trial_numbers]
+
+
+def nominal_block() -> list[ReplanConfig]:
+    """The baseline, A and B at the nominal toss noise, with and without a delay, and
+    the nominal cell again on tosses the cell wasn't chosen from."""
+    chosen, fresh = range(N_TRIALS), range(N_TRIALS, 2 * N_TRIALS)
+    no_delay = dict(tau_compute=0.0, period=NO_DELAY_PERIOD)
+    configs = cell("open_loop", chosen, sigma_p=0.0)
+    for sigma_p in SIGMAS_P:
+        configs += cell("predict_once", chosen, sigma_p=sigma_p) + cell("replan", chosen, sigma_p=sigma_p)
+        configs += cell("replan", chosen, sigma_p=sigma_p, **no_delay)
+    configs += cell("open_loop", fresh, sigma_p=0.0) + cell("predict_once", fresh) + cell("replan", fresh)
+    return configs + cell("replan", fresh, **no_delay)
+
+
+def sensitivity_block() -> list[ReplanConfig]:
+    """Section 9's delays, section 7.3's deadlines, how often to replan, and what
+    using 12 knots and a free first solve are worth.  24 knots gets 12 knots' delay
+    because at its own there is no time for any replan: results/replan_timing.md."""
+    tau = replan.TAU_COMPUTE
+    chosen = range(N_TRIALS)
+    configs = cell("replan", chosen, tau_compute=2 * tau, period=2 * tau)
+    for deadline in (0.35, 0.55):
+        configs += cell("replan", chosen, deadline=deadline)
+    for factor in (2, 4):
+        configs += cell("replan", chosen, period=factor * tau)
+    for period in (0.05, 0.10):
+        configs += cell("replan", chosen, tau_compute=0.0, period=period)
+    configs += cell("replan", chosen, n_knots=24)
+    return configs + cell("predict_once_charged", chosen)
+
+
+def _cell_key(r) -> tuple:
+    return r.approach, r.sigma_p, r.tau_compute, r.period, r.deadline, r.n_knots, r.trial // N_TRIALS
+
+
+def _name(r) -> str:
+    if r.approach == "open_loop":
+        return "baseline"
+    if r.approach == "predict_once":
+        return "Approach A"
+    if r.approach == "predict_once_charged":
+        return f"Approach A, solve charged {1e3 * r.tau_compute:.0f} ms"
+    return f"Approach B, {1e3 * r.tau_compute:.0f} ms delay, every {1e3 * r.period:.0f} ms, {r.n_knots} knots, deadline {r.deadline}"
+
+
+def _paired(rows, reference) -> str:
+    """Against the same tosses in reference: how many only this caught, only the other, and p."""
+    if not reference:
+        return "-"
+    only_this, only_other, p = trials.mcnemar([r.caught for r in rows], [reference[r.trial].caught for r in rows])
+    return f"{only_this} / {only_other}, p = {p:.2g}"
+
+
+def _spread(values, scale=1.0, digits=2) -> str:
+    values = [scale * v for v in values if not math.isnan(v)]
+    return f"{np.median(values):.{digits}f} / {max(values):.{digits}f}" if values else "-"
+
+
+def summary_table(results: list[ReplanResult]) -> list[str]:
+    cells: dict[tuple, list[ReplanResult]] = {}
+    for r in results:
+        cells.setdefault(_cell_key(r), []).append(r)
+    by_approach = {}
+    for key, rows in cells.items():
+        by_approach[(rows[0].approach, rows[0].sigma_p, key[-1])] = {r.trial: r for r in rows}
+    lines = ["| approach | trials | sigma_p (mm) | caught | on pad | contact | no plan | predicted miss, median (cm) | arm arrival error, "
+             f"median (cm) | timing error, 1 sigma (ms) | peak speed, median / worst | within {trials.SPEED_TOLERANCE}x | vs A | vs baseline "
+             "| solves, median | adopted, median | skipped, median | failed, total | target moved, median / worst (cm) | trigger moved, median / worst (ms) |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    for key, rows in cells.items():
+        r0 = rows[0]
+        moving = [r for r in rows if r.solve_ok]
+        baseline = by_approach.get(("open_loop", 0.0, key[-1])) if r0.approach != "open_loop" else None
+        a = by_approach.get(("predict_once", r0.sigma_p, key[-1])) if r0.approach not in ("open_loop", "predict_once") else None
+        low = key[-1] * N_TRIALS
+        peaks = [r.peak_speed for r in moving]
+        lines.append(
+            f"| {_name(r0)} | {low}-{low + N_TRIALS - 1} | {'-' if r0.approach == 'open_loop' else f'{1e3 * r0.sigma_p:.0f}'} "
+            f"| {trials._rate(sum(r.caught for r in rows), len(rows))} | {sum(r.caught_on_pad for r in rows)} "
+            f"| {sum(r.contact for r in rows)} | {sum(not r.solve_ok for r in rows)} "
+            f"| {100 * np.nanmedian([r.predicted_miss for r in rows]):.1f} "
+            f"| {100 * np.median([r.arm_arrival_error for r in moving]) if moving else math.nan:.2f} "
+            f"| {1e3 * np.nanstd([r.timing_error for r in rows]):.1f} "
+            f"| {_spread(peaks)} | {sum(r.caught and r.peak_speed <= trials.SPEED_TOLERANCE for r in rows)} "
+            f"| {_paired(rows, a)} | {_paired(rows, baseline)} "
+            f"| {np.median([r.n_solves for r in rows]):.0f} | {np.median([r.plans_adopted for r in rows]):.0f} "
+            f"| {np.median([r.solves_skipped for r in rows]):.0f} | {sum(r.solve_failures for r in rows)} "
+            f"| {_spread([abs(r.plan_drift) for r in rows], 100)} | {_spread([abs(r.trigger_shift) for r in rows], 1e3, 1)} |")
+    return lines
+
+
+def head_to_head(results: list[ReplanResult], sigma_p: float = trials.TrialConfig.sigma_p, trial_set: int = 0) -> list[str]:
+    """What B did on each kind of toss A had, at the headline settings."""
+    def rows(approach):
+        return {r.trial: r for r in results if r.approach == approach and r.sigma_p == sigma_p
+                and r.trial // N_TRIALS == trial_set and r.tau_compute == replan.TAU_COMPUTE
+                and r.period == replan.TAU_COMPUTE and r.deadline == replan.REPLAN_DEADLINE and r.n_knots == replan.REPLAN_KNOTS}
+
+    a, b = rows("predict_once"), rows("replan")
+    kinds = (("A caught", lambda r: r.caught), ("A had a motion and missed", lambda r: r.solve_ok and not r.caught),
+             ("A had no motion", lambda r: not r.solve_ok))
+    lines = ["| tosses | n | B caught | B had a motion and missed | B had no motion |", "|---|---|---|---|---|"]
+    for name, kind in kinds:
+        group = [b[t] for t, r in a.items() if kind(r) and t in b]
+        lines.append(f"| {name} | {len(group)} | {sum(r.caught for r in group)} | {sum(r.solve_ok and not r.caught for r in group)} "
+                     f"| {sum(not r.solve_ok for r in group)} |")
+    return lines
+
+
+def drift_table(results: list[ReplanResult], sigma_p: float = trials.TrialConfig.sigma_p) -> list[str]:
+    """Section 11.3's check on the mechanism: is catching related to how far B moved the target?"""
+    b = [r for r in results if r.approach == "replan" and r.sigma_p == sigma_p and r.trial < N_TRIALS and r.solve_ok
+         and r.tau_compute == replan.TAU_COMPUTE and r.period == replan.TAU_COMPUTE
+         and r.deadline == replan.REPLAN_DEADLINE and r.n_knots == replan.REPLAN_KNOTS]
+    a = {r.trial: r for r in results if r.approach == "predict_once" and r.sigma_p == sigma_p and r.trial < N_TRIALS}
+    if not b or not a:
+        return []
+    lines = ["| target moved by B (cm) | tosses | B caught | A caught, same tosses |", "|---|---|---|---|"]
+    b.sort(key=lambda r: r.plan_drift)
+    for part in np.array_split(np.arange(len(b)), 4):
+        group = [b[i] for i in part]
+        lines.append(f"| {100 * group[0].plan_drift:.1f} to {100 * group[-1].plan_drift:.1f} | {len(group)} | {sum(r.caught for r in group)} "
+                     f"| {sum(a[r.trial].caught for r in group if r.trial in a)} |")
+    return lines
+
+
+def write_report(results: list[ReplanResult], path: Path) -> None:
+    """Write the tables below the marker in path, keeping whatever is above it."""
+    above = "# Approach B against Approach A and the baseline\n\n"
+    if path.exists():
+        above = path.read_text().split(trials.GENERATED_MARKER)[0]
+    lines = [trials.GENERATED_MARKER, "",
+             "Every row is position-only with sigma lateral = 0.04 m/s, sigma vertical = 0.02 m/s and 30 ms of close latency, and "
+             "trial n is the same toss and sensor noise in every row.  Caught is spec section 13.3's definition, with a 95% confidence "
+             "interval.  'vs A' and 'vs baseline' compare the same tosses: how many only this row caught, how many only the other, and "
+             "McNemar's exact p.", ""]
+    lines += summary_table(results)
+    lines += ["", "What B did with each kind of toss A had, at the headline settings, on trials 0 to 99:", ""]
+    lines += head_to_head(results)
+    lines += ["", "Catches against how far B moved the target, the same tosses split into four equal groups:", ""]
+    lines += drift_table(results)
+    wall = [r.wall_time for r in results]
+    lines += ["", f"{len(results)} trials, {np.mean(wall):.1f} s per trial on average per worker.", ""]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(above + "\n".join(lines))
+
+
+def run():
+    results = trials.sweep(nominal_block(), runner=run_trial)
+    trials.write_csv(results, CSV_PATH)
+    write_report(results, REPORT_PATH)
+    print(f"{len(results)} trials written to {CSV_PATH} and {REPORT_PATH}", flush=True)
+    results += trials.sweep(sensitivity_block(), runner=run_trial)
+    trials.write_csv(results, CSV_PATH)
+    write_report(results, REPORT_PATH)
+    print(f"{len(results)} trials written to {CSV_PATH} and {REPORT_PATH}")
+
+
+def repeat():
+    """Re-run the nominal cell for Approach B."""
+    differences = trials.repeat_check(cell("replan", range(N_TRIALS)), CSV_PATH, runner=run_trial)
+    print("\n".join([f"{len(differences)} differences from {CSV_PATH}"] + differences))
+
+
+if __name__ == "__main__":
+    repeat() if sys.argv[1:] == ["repeat"] else run()
