@@ -104,10 +104,10 @@ sections 1 and 7, which don't involve a catch motion, was re-run at that limit; 
 
 ## Still open
 
-- **The latency sweep needs defining.** The trigger subtracts the latency it is configured with, so sweeping it leaves
-  Approach A's fingers moving at the same time and changes nothing. To show an effect, set `assumed_latency` so the
-  trigger assumes one latency while the plumbing applies another.
 - Not run: any test of a perched ball under arm motion.
+
+The latency sweep is defined and run: the trigger keeps assuming 30 ms while the real latency moves, since a trigger told each value
+would change nothing. Results are in `results/robustness.md`.
 
 ## 1. Gripper response
 

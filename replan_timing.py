@@ -1,7 +1,7 @@
 """What sets Approach B's constants: is the ball's flight really ballistic, how long do
 replans take, and does a warm start or a coarser plan change the answer?
 
-    HEADLESS=1 python replan_timing.py [residuals] [solve_times]
+    HEADLESS=1 python replan_timing.py [residuals] [solve_times] [moving_start]
 
 prints the sections of results/replan_timing.md.  Solve times run one trial at a
 time, because parallel workers slow each other down by about a factor of two.
@@ -191,12 +191,33 @@ def report_solve_times(pool):
     print()
 
 
+def run_moving_start(trial):
+    """The headline B's own solves in one trial, leaving out the baseline's plan it starts on."""
+    run = catch.simulate_catch(replan.MovingStartPolicy, **NOMINAL, trial=trial)
+    policy = run.controller.policy
+    return dict(times=policy.solve_times[1:], failures=policy.solve_failures)
+
+
+def report_moving_start(pool):
+    print("## 3. The headline B's solves\n")
+    print("The headline B starts on the baseline's plan, so its first solve is a warm 12-knot correction, not a cold 24-knot solve.  "
+          f"Its solves at the {1e3 * replan.TAU_COMPUTE:.0f} ms delay, on the same {N_TIMING_TRIALS} trials one at a time, "
+          "median / p95 / worst in ms:\n")
+    out = [run_moving_start(t) for t in range(N_TIMING_TRIALS)]
+    first = [o["times"][0] for o in out if o["times"]]
+    later = [t for o in out for t in o["times"][1:]]
+    print("| solves | failed | first correction | later ones | all |")
+    print("|---|---|---|---|---|")
+    print(f"| {len(first) + len(later)} | {sum(o['failures'] for o in out)} | {stats(first)} | {stats(later)} | {stats(first + later)} |")
+    print()
+
+
 def run(sections):
     with multiprocessing.get_context("spawn").Pool(N_WORKERS, initializer=init_worker) as pool:
-        for name, section in (("residuals", report_residuals), ("solve_times", report_solve_times)):
+        for name, section in (("residuals", report_residuals), ("solve_times", report_solve_times), ("moving_start", report_moving_start)):
             if name in sections:
                 section(pool)
 
 
 if __name__ == "__main__":
-    run(sys.argv[1:] or ["residuals", "solve_times"])
+    run(sys.argv[1:] or ["residuals", "solve_times", "moving_start"])

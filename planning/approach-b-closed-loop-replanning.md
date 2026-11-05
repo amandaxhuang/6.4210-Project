@@ -5,11 +5,18 @@
 **Source:** `6.4210 project planning.pdf`, §4 "Approach B (closed-loop replanning)"
 **Builds on:** `planning/approach-a-predict-once.md` (the shared layer),
 `planning/week1-environment-and-constraints.md`, `results/catch_feasibility.md`
-**Status:** Built through step 9 of §14 on branch `approach-a`. Results are in `results/approach_b.md` and `results/replan_timing.md`. The Week 4 sweep isn't run.
+**Status:** Built through step 9 of §14 on branch `approach-a`. Results are in `results/approach_b.md` and `results/replan_timing.md`. The robustness sweep is run, for the
+moving-start versions: `results/robustness.md`.
 
-**Result, 2026-11-05.** At the nominal cell B catches 90 of 100 against A's 68 and the baseline's 44, with 22 only B and none only A (p = 5e-7), and 91 against 70 on
+**Result, 2026-11-05.** As written here, at the nominal cell B catches 90 of 100 against A's 68 and the baseline's 44, with 22 only B and none only A (p = 5e-7), and 91 against 70 on
 tosses the cell wasn't chosen from. The gap is 0, 22 and 56 tosses at σ_p = 0, 2 and 5 mm. Measuring it changed the design in the ways below, and most of the
 sections that follow are left as written for the record.
+
+**The headline is now a moving start, chosen 2026-11-05 after seeing it, so the team should agree to it.** The arm starts on the baseline's plan, which needs no measurements, so
+it could really be computed before the toss, and no solve after that is free (`replan.MovingStartPolicy`). The matching A follows the same plan and makes one charged correction from
+the same data (`replan.OneCorrectionPolicy`). B catches 87 to A's 62 at the nominal cell, with 25 only B and none only A (p = 6e-8), and 83 to 24 at 5 mm. This replaces §2's "first
+solve is A's" and §3's timeline: with replanning off, B is now the baseline rather than A, and the equivalence test checks that. `results/approach_b.md` compares the versions, and
+`results/robustness.md` has how the headline holds up.
 
 - **Replanning is at about 22 Hz with a 45 ms delay, not 50 Hz.** Warm-started replans take longer than §9 expected. So they use 12 knots (§11.2, step 3), and
   one solver works at a time, so the period equals the delay: a 20 ms period with a 45 ms delay isn't something a real system could do. `replan.py` and
@@ -17,7 +24,7 @@ sections that follow are left as written for the record.
 - **§8 rule 1 is wrong when there's a delay, and rule 2 doesn't follow from it.** A plan seeded at *t* from the commanded state and adopted at *t* + delay disagrees with the
   old plan, which has moved on by then. Each replan instead starts from where the current plan will be at adoption, and a plan takes over when its trajectory starts. With no delay
   this is rule 1.
-- **The first solve is free, as A's is**, not adopted at 0.100 + `tau_compute` as §3 has it. With a first solve charged even 45 ms, A falls from 68 to 15, so charging only B's would
+- **In the version as written here, the first solve is free, as A's is**, not adopted at 0.100 + `tau_compute` as §3 has it. With a first solve charged even 45 ms, A falls from 68 to 15, so charging only B's would
   end the comparison. This is the biggest assumption behind both approaches, and the paper has to say so.
 - **The deadline is on when a plan takes over**, which is what §7.3's `t_c` measures, rather than when its solve starts.
 - **§2's "exactly one file" can't hold literally.** B needs hooks in the shared layer that A and the baseline ignore, recorded in A's spec as §2 asks. `replan_timing.py` and
@@ -490,12 +497,13 @@ headline bar chart, is what shows the mechanism rather than just the outcome.
 | 0 mm | 0 | 0 | 91 | **No gap**: nothing to correct. The honest control. A's 9 misses have no motion. *Measured: B 91, no disagreements* |
 | 2 mm (nominal) | 1.15 cm | 0.08 cm | 68 | **A moderate gap.** A's 22 misses with a motion are what B could recover. This row said "small gap" before A was measured, because A's 1σ is inside the clearance. *Measured: B 90, recovering all 22* |
 | 5 mm | 2.87 cm | 0.21 cm | 11 | **Large gap** — A is past the tolerance edge, B is well inside. *Measured: B 67* |
-| 10 mm | 5.73 cm | 0.42 cm | not run | **Likely the largest gap**; A mostly fails, B is still well inside |
-| 20 mm | 11.5 cm | 0.85 cm | not run | A fails; B limited by the 4–6 cm correction envelope, so the gap narrows again |
+| 10 mm | 5.73 cm | 0.42 cm | not run | **Likely the largest gap**; A mostly fails, B is still well inside. *Measured, moving start: A 31, B 84, 53 only B and 0 only A. The gap was largest at 5 mm (59 / 0), not here. A's correction fails to solve on 60 tosses, which stay on the baseline's plan and give 30 of its 31 catches* |
+| 20 mm | 11.5 cm | 0.85 cm | not run | A fails; B limited by the 4–6 cm correction envelope, so the gap narrows again. *Measured, moving start: A 37, B 75, 40 / 2. The gap narrows, but not for the predicted reason: B stays on the baseline's plan as often as at 2 mm (13 tosses), and loses catches to its estimate, with a median predicted miss of 1.3 cm* |
 
 A's measured column is at σ_lat = 0.04 m/s, σ_vz = 0.02 m/s and a 0.10 s window, from `results/approach_a.md`. Only the 2 mm and 0 mm
-predictions were rewritten after seeing it, and all of them before B ran. The *Measured* notes were added after, from `results/approach_b.md`. B's three
-rows match the predicted shape; 10 and 20 mm, and the collapse at high toss noise below, wait for the Week 4 sweep.
+predictions were rewritten after seeing it, and all of them before B ran. The *Measured* notes were added after, from `results/approach_b.md` for the
+first three rows and from `results/robustness.md` for 10 and 20 mm. Those two are the headline's moving-start versions, so A's 2 mm and 5 mm there are 62
+and 24, not 68 and 11. The shape holds, a gap that opens with sensor noise and narrows again, but it peaks earlier than predicted.
 
 And against toss variability: the gap should grow with σ_lat up to the point where the required
 correction exceeds the envelope (σ_lat ≈ 0.08 m/s, where 2σ of landing shift is 9.2 cm against a
@@ -604,6 +612,6 @@ and both tests take an afternoon.
 - [x] Replan deadline sensitivity run at {0.35, 0.47, 0.55} s
 - [x] Nominal cell: 100 paired trials, B vs. A vs. baseline, with McNemar's test (B7)
 - [x] Result checked against §12's predicted shape, at the three levels of σ_p run; the rest waits for the Week 4 sweep
-- [ ] Success-vs-`plan_drift` figure produced (§11.3): the numbers are a table in `results/approach_b.md`; the figure is Week 4's
+- [x] Success-vs-`plan_drift` figure produced (§11.3): `results/figures/caught_by_target_moved.png`, for the moving-start versions. B caught every toss it moved its target on, and A's catches don't fall off with how far B moved, as §11.3 expected: 14, 14, 16 and 18 of about 22 per group, with no significant trend. A's misses come from its estimate rather than from large moves: `results/robustness.md`
 - [x] `planning/assumptions.md` updated: RLS over KF and why, `REPLAN_PERIOD`, `tau_compute`,
       the replan deadline, and the sensor-rate ceiling on useful replanning

@@ -121,9 +121,10 @@ def factor_table(results, name: str, levels, setting: str, format_level, approac
     """Caught, and the details that explain it, at each level of one factor."""
     settings_of = settings_of or (lambda level: {setting: level})
     lines = [f"| {name} | baseline caught | A caught | B caught | B against A: only B / only A, p | on pad, A / B | "
+             "caught ball ends along the fingers, median, A / B (cm) | "
              "contact, A / B | stayed on the baseline's plan, A / B | failed solves per trial, B | predicted miss, median, A / B (cm) | "
              "timing error, 1 sigma, A / B (ms) |",
-             "|---|---|---|---|---|---|---|---|---|---|---|"]
+             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for level in levels:
         settings = settings_of(level)
         base = select(results, BASELINE, **settings) if BASELINE in approaches else None
@@ -131,6 +132,7 @@ def factor_table(results, name: str, levels, setting: str, format_level, approac
         lines.append(
             f"| {format_level(level)} | {base.text() if base and base.results else '-'} | {a.text()} | {b.text()} | {b.paired(a)} "
             f"| {sum(r.caught_on_pad for r in a.results)} / {sum(r.caught_on_pad for r in b.results)} "
+            f"| {_ends_cm(a.results)} / {_ends_cm(b.results)} "
             f"| {sum(r.contact for r in a.results)} / {sum(r.contact for r in b.results)} "
             f"| {_on_baselines_plan(a)} / {_on_baselines_plan(b)} "
             f"| {np.mean([r.solve_failures for r in b.results]):.1f} "
@@ -141,6 +143,12 @@ def factor_table(results, name: str, levels, setting: str, format_level, approac
 def _on_baselines_plan(row: Row) -> int:
     """How many tosses never left the baseline's plan, because every solve failed or nothing needed correcting."""
     return sum(r.plans_adopted <= 1 for r in row.results)
+
+
+def _ends_cm(results) -> str:
+    """Where caught balls end along the fingers from the pinch point.  The pad reaches 1 cm."""
+    ends = [r.end_fingers for r in results if r.caught]
+    return f"{100 * np.median(ends):.2f}" if ends else "-"
 
 
 def _median_cm(row: Row) -> str:
@@ -189,7 +197,7 @@ def movement_table(results) -> list[str]:
     for part in (part for part in np.array_split(order, 4) if len(part)):
         tosses = [rows[A][i].trial for i in part]
         counts = " | ".join(str(sum(by_trial[approach][t].caught for t in tosses)) for approach in APPROACHES)
-        lines.append(f"| {100 * needed[part[0]]:.1f} to {100 * needed[part[-1]]:.1f} | {len(part)} | {counts} |")
+        lines.append(f"| {100 * needed[part[0]]:.2f} to {100 * needed[part[-1]]:.2f} | {len(part)} | {counts} |")
     return lines
 
 
@@ -210,6 +218,7 @@ def metric_table(results) -> list[str]:
     add("Caught (primary)", lambda g: trials._rate(sum(r.caught for r in g), len(g)))
     add("Contact", lambda g: f"{sum(r.contact for r in g)}")
     add("Caught on the pad", lambda g: f"{sum(r.caught_on_pad for r in g)}")
+    add("Caught ball ends along the fingers, median (cm)", _ends_cm)
     add(f"Caught within {trials.SPEED_TOLERANCE}x of rated speed", lambda g: f"{sum(r.caught and r.peak_speed <= trials.SPEED_TOLERANCE for r in g)}")
     add("Predicted miss, median (cm)", spread("predicted_miss", 100))
     add("Timing error, 1 sigma (ms)", lambda g: f"{1e3 * np.nanstd([r.timing_error for r in g]):.1f}")
@@ -229,7 +238,7 @@ def write_report(results: list[ReplanResult], path: Path) -> None:
     if path.exists():
         above = path.read_text().split(GENERATED_MARKER)[0]
     mm = lambda level: f"{1e3 * level:.0f} mm"
-    speed = lambda level: f"{level} m/s"
+    speed = lambda level: f"{level:g} m/s"
     sections = [
         ("Every metric on the final list, at the nominal cell", metric_table(results)),
         ("Sensor noise", factor_table(results, "sigma_p", SIGMAS_P, "sigma_p", mm)),

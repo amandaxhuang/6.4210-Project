@@ -104,6 +104,12 @@ class TablesTest(unittest.TestCase):
         table = robustness.factor_table(a + b + base, "sigma_p", (0.002,), "sigma_p", str)
         self.assertIn("2 / 0, p = 0.5", table[2])
 
+    def test_where_the_ball_ends_counts_only_caught_balls(self):
+        a = [result_row(approach=A, trial=t, caught=c, end_fingers=e) for t, (c, e) in enumerate(((True, 0.012), (True, 0.004), (True, 0.006), (False, -0.5)))]
+        b = rows(B, [False, False, False, False])
+        table = robustness.factor_table(a + b, "sigma_p", (0.002,), "sigma_p", str, approaches=(A, B))
+        self.assertIn("| 0.60 / - |", table[2])
+
     def test_movement_needed_is_how_far_the_ball_lands_from_where_the_brake_ends(self):
         plan = robustness.toss.plan_toss(catch.shared_kinematics().plant)
         t, p = robustness.toss.catch_point(plan)

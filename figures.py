@@ -56,10 +56,15 @@ def _series(ax, levels, rows: list[robustness.Row], approach: str, label_end: bo
     ax.plot(x, k, color=color, linewidth=LINE_WIDTH, solid_capstyle="round", solid_joinstyle="round", marker="o",
             markersize=MARKER_SIZE, markeredgecolor=SURFACE, markeredgewidth=RING, label=robustness.APPROACHES[approach])
     if label_end:
-        ax.annotate(f"{robustness.APPROACHES[approach]} {k[-1]}", (x[-1], k[-1]), xytext=(8, 0), textcoords="offset points",
-                    va="center", color=TEXT, fontsize=9)
+        _end_label(ax, x[-1], k[-1], f"{robustness.APPROACHES[approach]} {k[-1]}")
     ax.set_xticks(x, levels)
     ax.set_xlim(-0.25, len(levels) - 0.25 + (0.75 if label_end else 0))
+
+
+def _end_label(ax, x, y, text: str) -> None:
+    """A direct label at a line's last point, on a patch of surface so a gridline doesn't run through it."""
+    ax.annotate(text, (x, y), xytext=(8, 0), textcoords="offset points", va="center", color=TEXT, fontsize=9,
+                bbox=dict(boxstyle="square,pad=0.1", facecolor=SURFACE, edgecolor="none"))
 
 
 def _save(fig, name: str) -> Path:
@@ -100,11 +105,11 @@ def by_both_noises(results) -> Path:
 
 
 def by_target_moved(results) -> Path:
-    """Spec section 11.3's check on the mechanism: A's catches fall off where B had to move its target the most."""
+    """Spec section 11.3's check on the mechanism: catches against how far B moved its target, on the same tosses."""
     a = {r.trial: r for r in robustness.select(results, A).results}
     b = sorted((r for r in robustness.select(results, B).results if r.plans_adopted > 1), key=lambda r: r.plan_drift)
-    groups = [[b[i] for i in part] for part in np.array_split(np.arange(len(b)), 4)]
-    labels = [f"{100 * g[0].plan_drift:.1f} to {100 * g[-1].plan_drift:.1f}" for g in groups]
+    groups = [[b[i] for i in part] for part in np.array_split(np.arange(len(b)), 4) if len(part)]
+    labels = [f"{100 * g[0].plan_drift:.2f}–{100 * g[-1].plan_drift:.2f}" for g in groups]
     fig, ax = plt.subplots(figsize=(5.4, 3.3))
     x = np.arange(len(groups))
     for approach, share in ((B, [sum(r.caught for r in g) / len(g) for g in groups]),
@@ -112,11 +117,10 @@ def by_target_moved(results) -> Path:
         y = 100 * np.array(share)
         ax.plot(x, y, color=COLORS[approach], linewidth=LINE_WIDTH, marker="o", markersize=MARKER_SIZE, markeredgecolor=SURFACE,
                 markeredgewidth=RING, label=robustness.APPROACHES[approach])
-        ax.annotate(f"{robustness.APPROACHES[approach]} {y[-1]:.0f}%", (x[-1], y[-1]), xytext=(8, 0), textcoords="offset points", va="center",
-                    color=TEXT, fontsize=9)
+        _end_label(ax, x[-1], y[-1], f"{robustness.APPROACHES[approach]} {y[-1]:.0f}%")
     ax.set_xticks(x, labels)
     ax.set_xlim(-0.25, len(groups) - 0.25 + 0.75)
-    _style(ax, "How far B moved its target (cm): the same tosses, in four equal groups", "Caught (%)")
+    _style(ax, f"How far B moved its target (cm), on the {len(b)} tosses where it did, in four equal groups", "Caught (%)")
     _legend(ax)
     return _save(fig, "caught_by_target_moved")
 
@@ -126,9 +130,9 @@ def make_all(results) -> list[Path]:
     return [
         by_factor(results, "caught_by_sensor_noise", "Sensor noise (mm)", "sigma_p", robustness.SIGMAS_P, mm),
         by_factor(results, "caught_by_lateral_toss_noise", "Lateral toss noise (m/s)", "sigma_lat", robustness.SIGMAS_LAT,
-                  [str(s) for s in robustness.SIGMAS_LAT]),
+                  [f"{s:g}" for s in robustness.SIGMAS_LAT]),
         by_factor(results, "caught_by_vertical_toss_noise", "Vertical toss noise (m/s)", "sigma_vz", robustness.SIGMAS_VZ,
-                  [str(s) for s in robustness.SIGMAS_VZ]),
+                  [f"{s:g}" for s in robustness.SIGMAS_VZ]),
         by_factor(results, "caught_by_close_latency", "Real close latency, with the trigger assuming 30 ms (ms)", "latency", robustness.LATENCIES,
                   [f"{1e3 * s:.0f}" for s in robustness.LATENCIES]),
         by_both_noises(results),

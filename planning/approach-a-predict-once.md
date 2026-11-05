@@ -52,6 +52,9 @@ and `planning/assumptions.md`.
   differences, and the feasibility report is byte for byte the same.
 - **Approach B now exists and beats A**, 90 to 68 at the nominal cell. It depends on §5.4's free first solve just as A does: charged 45 ms, A falls to 15.
   See `results/approach_b.md`.
+- **The headline A is now a moving start, chosen 2026-11-05, so the team should agree to it.** It follows the baseline's plan, which needs no measurements, and makes one charged correction from
+  the same 0.10 s of data (`replan.OneCorrectionPolicy`). That removes §5.4's free solve. It catches 62 of 100 at the nominal cell. The version this spec describes stays in the code and
+  in `results/approach_a.md`.
 - **`arm_arrival_error` isn't the tracker alone**, as §13.1 first said. Every plan stops 5.2 mm from its target, at the corner of
   `POSITION_TOL`'s box. No catch result changes, only what that number means. See `results/replan_timing.md`.
 
@@ -632,6 +635,8 @@ One row per trial. Everything here is cheap to record and expensive to re-run fo
 | `timing_error` (s) | actual arrival at `Z_CATCH` − planned `t_catch` |
 | `predicted_miss` (m) | ‖p_catch_estimated − p_catch_true‖ — the estimator's error alone |
 | `arm_arrival_error` (m) | ‖pinch at `t_catch` − p_catch_planned‖ — the tracker's error, combined with the 5.2 mm from the target that every plan stops at (`results/replan_timing.md`) |
+| `plan_stop_error`, `tracking_error` (m) | Those two parts apart: where the last plan stops against its target, and the pinch point at `t_catch` against where the plan stops. Added 2026-11-05; report these rather than `arm_arrival_error`, whose parts partly cancel |
+| `end_fingers`, `end_across` (m) | Where the ball ends relative to the pinch point, in the gripper frame. On the pad means both within 1 cm |
 | `solve_ok`, `solve_time`, `n_solves`, `fit_rank_deficient`, `intercept_rejected`, `toss_infeasible` | Diagnostics and fairness audit |
 | `v_release_true`, `p_release_true` | What the toss actually did, for attributing failures |
 
@@ -691,6 +696,11 @@ total stays the same:
 
 The σ_p levels jump from 2 mm to 5 mm, and at this toss noise A falls from 68 to 11 of 100 across that jump. The grid's 37 at 3 mm is the
 only point between them. Adding 3 mm as a level would cost 300 more trials. *Not decided.*
+
+**As run, 2026-11-05:** `robustness.py`, for the moving-start versions of A and B (`results/approach_b.md`), 6600 trials. It is this table's
+one-factor-at-a-time sweep with σ_p up to 20 mm and σ_lat up to 0.12 m/s, plus no noise at all, the nominal cell again on trials 100 to 199, and
+toss noise crossed with sensor noise, which includes 3 mm. The latency sweep keeps the trigger assuming 30 ms, since a trigger told each real
+latency would change nothing. Results: `results/robustness.md`.
 
 **Measure the per-trial wall time in Week 3 and put it in `results/`.** The sim is ~2.6 s of
 simulated time at a 1 ms step; headless that is seconds, and B adds solver time on top. Trials
