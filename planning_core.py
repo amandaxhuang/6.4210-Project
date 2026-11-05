@@ -86,20 +86,21 @@ def ball_height(plan: toss.TossPlan, t):
     return toss.ballistic_position(plan.p_release, plan.v_release, t)[..., 2]
 
 
-def initial_guess(kin, q0, v0, t0, T, p_target) -> Motion:
-    """Cubic from (q0, v0) to a catch pose at rest, as a starting point."""
+def initial_guess(kin, q0, v0, t0, T, p_target, n=N_KNOTS) -> Motion:
+    """Cubic from (q0, v0) to a catch pose at rest, on n intervals, as a starting point."""
     q_end = toss.catch_pose(kin.plant, p_target)
     if q_end is None:
         q_end = toss.RELEASE_POSE
     curve = PiecewisePolynomial.CubicHermite(
         [t0, t0 + T], np.column_stack([q0, q_end]), np.column_stack([v0, np.zeros(7)])
     )
-    t = np.linspace(t0, t0 + T, N_KNOTS + 1)
+    t = np.linspace(t0, t0 + T, n + 1)
     return Motion(t, np.array([curve.value(ti).ravel() for ti in t]),
                   np.array([curve.EvalDerivative(ti, 1).ravel() for ti in t]))
 
 
-def plan_reach(kin, plan, q0, v0, t0, T, p_target, a_max, direction=None, guess=None, speed_margin=toss.VELOCITY_MARGIN):
+def plan_reach(kin, plan, q0, v0, t0, T, p_target, a_max, direction=None, guess=None, speed_margin=toss.VELOCITY_MARGIN,
+               n_knots=N_KNOTS):
     """A motion from (q0, v0) at t0 (s after release) that stops at t0 + T with
     the pinch point at p_target + delta * direction and the gripper within
     CATCH_TILT of up, keeping the pinch point at or below the ball throughout.
@@ -107,10 +108,10 @@ def plan_reach(kin, plan, q0, v0, t0, T, p_target, a_max, direction=None, guess=
     With no direction, delta is 0 and the smoothest such motion is returned.
     With a direction, delta is made as large as possible.  a_max is a per-joint
     acceleration limit (rad/s^2), or None for velocity limits only.  speed_margin
-    is the fraction of each joint's rated speed it may use.  Returns a Motion, or
-    None if the solver finds none.
+    is the fraction of each joint's rated speed it may use.  A guess must be on
+    n_knots intervals.  Returns a Motion, or None if the solver finds none.
     """
-    n, h = N_KNOTS, T / N_KNOTS
+    n, h = n_knots, T / n_knots
     t = t0 + h * np.arange(n + 1)
     prog = MathematicalProgram()
     q = prog.NewContinuousVariables(n + 1, 7, "q")
@@ -169,7 +170,7 @@ def plan_reach(kin, plan, q0, v0, t0, T, p_target, a_max, direction=None, guess=
         prog.AddLinearCost(-100 * delta[0])
 
     if guess is None:
-        guess = initial_guess(kin, q0, v0, t0, T, p_target)
+        guess = initial_guess(kin, q0, v0, t0, T, p_target, n)
     prog.SetInitialGuess(q, guess.q)
     prog.SetInitialGuess(v, guess.v)
     prog.SetInitialGuess(delta, [0.0])

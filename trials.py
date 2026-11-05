@@ -147,7 +147,11 @@ def run_trial(config: TrialConfig) -> TrialResult:
     run = catch.simulate_catch(_policy_factory(config), sigma_p=config.sigma_p, sigma_v=config.sigma_v,
                                obs_mode=config.obs_mode, latency=config.latency, assumed_latency=config.assumed_latency,
                                sigma_lat=config.sigma_lat, sigma_vz=config.sigma_vz, trial=config.trial)
-    wall_time = time.perf_counter() - start
+    return record(config, run, time.perf_counter() - start)
+
+
+def record(config: TrialConfig, run: catch.CatchRun, wall_time: float) -> TrialResult:
+    """The trial record of one simulated catch."""
     o, plan = run.outcome, run.plans[-1]
     p0, v0 = release_state(run)
     return TrialResult(
@@ -174,14 +178,14 @@ def _init_worker():
     env.ASSET_DIR = Path(tempfile.mkdtemp(prefix="trials_"))
 
 
-def sweep(configs: list[TrialConfig], n_workers: int = N_WORKERS) -> list[TrialResult]:
+def sweep(configs: list[TrialConfig], n_workers: int = N_WORKERS, runner=run_trial) -> list[TrialResult]:
     """Run the trials in parallel.  Results come back in the order of configs."""
     with multiprocessing.get_context("spawn").Pool(n_workers, initializer=_init_worker) as pool:
-        return pool.map(run_trial, configs, chunksize=1)
+        return pool.map(runner, configs, chunksize=1)
 
 
 def write_csv(results: list[TrialResult], path: Path) -> None:
-    names = [f.name for f in fields(TrialResult)]
+    names = [f.name for f in fields(results[0] if results else TrialResult)]
 
     def cell(value):
         return f"{value:.12g}" if isinstance(value, float) else str(value)

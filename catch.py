@@ -35,7 +35,7 @@ from pydrake.all import (
 )
 
 import environment as env
-from planning_core import Kinematics, Motion, accel_limits, plan_reach
+from planning_core import Kinematics, Motion, N_KNOTS, accel_limits, plan_reach
 import sensing
 from sensing import BallisticFit, BallSensor, Estimate, Observation
 import toss
@@ -131,15 +131,16 @@ def toss_velocity_noise(trial: int, sigma_lat: float, sigma_vz: float) -> np.nda
     return draw * np.array([sigma_lat, sigma_lat, sigma_vz])
 
 
-def intercept(est: Estimate, z_catch: float, t_rel: float) -> tuple[float, np.ndarray] | None:
+def intercept(est: Estimate, z_catch: float, t_rel: float, t_min_motion: float = T_MIN_MOTION) -> tuple[float, np.ndarray] | None:
     """When (s after release) and where the fitted flight comes down through
     z_catch, or None if it never does, or does so too soon to reach or
-    implausibly late.  Unreachable targets inside those times are left for the
-    planner to fail on: that is a result, not something to hide here."""
+    implausibly late.  t_min_motion is the least time to reach it from t_rel, from
+    rest unless given otherwise.  Unreachable targets inside those times are left
+    for the planner to fail on: that is a result, not something to hide here."""
     if est.v0[2] ** 2 - 2 * toss.G_ACCEL * (z_catch - est.p0[2]) < 0:
         return None
     t = toss.time_to_height(est.p0, est.v0, z_catch)
-    if not t_rel + T_MIN_MOTION <= t <= T_MAX_CATCH:
+    if not t_rel + t_min_motion <= t <= T_MAX_CATCH:
         return None
     return t, toss.ballistic_position(est.p0, est.v0, t)
 
@@ -189,6 +190,7 @@ class CatchPlan:
     solve_ok: bool
     fit_rank_deficient: bool = False  # fell back to nominal: too few observations
     intercept_rejected: bool = False  # fell back to nominal: unbelievable intercept
+    motion: Motion | None = None  # the knots behind q_traj, to warm-start another solve from
 
 
 class CatchPlanner:
@@ -203,18 +205,18 @@ class CatchPlanner:
         self.z_catch = toss_plan.p_release[2] - toss.CATCH_DROP
         self.nominal = nominal_catch(toss_plan)
 
-    def plan(self, t_rel, q0, v0, t_catch, p_catch, est=None, **flags) -> CatchPlan:
+    def plan(self, t_rel, q0, v0, t_catch, p_catch, est=None, guess=None, n_knots=N_KNOTS, **flags) -> CatchPlan:
         """Plan from (q0, v0) at t_rel to rest at p_catch at t_catch (both in s
         after release).  A failed solve is reported, not retried: a retry one
         approach gets and another doesn't would break the comparison."""
         start = time.perf_counter()
         motion = plan_reach(self.kin, self.toss_plan, q0, v0, t_rel, t_catch - t_rel,
-                            p_catch, self.a_max, speed_margin=PLAN_SPEED_LIMIT)
+                            p_catch, self.a_max, guess=guess, speed_margin=PLAN_SPEED_LIMIT, n_knots=n_knots)
         solve_time = time.perf_counter() - start
         t_release = self.toss_plan.t_release
         q_traj = None if motion is None else motion_to_trajectory(motion, t_release)
         return CatchPlan(q_traj, t_release + t_catch, p_catch, est, solve_time,
-                         motion is not None, **flags)
+                         motion is not None, motion=motion, **flags)
 
 
 class CatchPolicy(Protocol):
@@ -227,6 +229,10 @@ class CatchPolicy(Protocol):
         q_cmd     the position currently being commanded (not measured)
         qdot_cmd  its derivative
         plan      the plan being followed, or None before the first decision
+
+        A plan takes over when its trajectory starts, which may be later than now.
+        A policy may name the estimator it wants in fit_class; the default is
+        BallisticFit.
         """
 
 
@@ -290,7 +296,8 @@ class CatchController(LeafSystem):
     trigger allows for it, unless assumed_latency says it allows for another value.
     lead overrides how long before t_catch the decision to close is taken.
     pad_lead is how long before t_catch the pads should reach the ball's width.
-    compute_latency delays when a plan may first be acted on.
+    compute_latency delays when a plan may first be acted on, and a plan is never
+    acted on before its own trajectory starts.
     """
 
     def __init__(self, toss_plan, policy, fit, latency=T_LATENCY, lead=None, compute_latency=0.0,
@@ -306,6 +313,8 @@ class CatchController(LeafSystem):
         self.pad_lead = pad_lead
         self.assumed_latency = latency if assumed_latency is None else assumed_latency
         self.t_close = np.inf  # the latest decision to close, for the trial record
+        self.t_close_first = np.inf  # and the first
+        self.adoption_times: list[float] = []  # when each plan took over, in simulation time
         self.t_last_observation = -np.inf
         self.plans: list[CatchPlan] = []  # every plan the policy returned
         self.policy_calls = 0
@@ -347,7 +356,7 @@ class CatchController(LeafSystem):
         plan, t_close, pending, t_adopt = d.plan, d.t_close, d.pending, d.t_adopt
         if pending is not None and t >= t_adopt - 1e-9:
             plan, t_close, pending = pending, self._t_close(t, pending, t_close), None
-            self.plans_adopted += 1
+            self._adopted(t)
 
         trajectory = self._trajectory(plan)
         new = self.policy.update(t_rel, self.fit.estimate(), trajectory.value(t).ravel(),
@@ -355,15 +364,22 @@ class CatchController(LeafSystem):
         self.policy_calls += 1
         if new is not None:
             self.plans.append(new)
-            if self.compute_latency <= 0:
+            t_due = t + self.compute_latency
+            if new.q_traj is not None:
+                t_due = max(t_due, new.q_traj.start_time())
+            if t_due <= t + 1e-9:
                 plan, t_close = new, self._t_close(t, new, t_close)
-                self.plans_adopted += 1
+                self._adopted(t)
             else:
-                pending, t_adopt = new, t + self.compute_latency
+                pending, t_adopt = new, t_due
         if t_rel >= DECISION_DEADLINE and not self.plans:
             raise RuntimeError(f"the policy returned no plan by {DECISION_DEADLINE} s after release")
         state.get_mutable_abstract_state(self.decision_index).set_value(
             _Decision(plan, t_close, pending, t_adopt))
+
+    def _adopted(self, t):
+        self.plans_adopted += 1
+        self.adoption_times.append(t)
 
     def _t_close(self, t, plan, t_close):
         """The decision to close, from this plan.  Once it has been taken it stands:
@@ -371,6 +387,8 @@ class CatchController(LeafSystem):
         if t >= t_close or not plan.solve_ok:
             return t_close
         self.t_close = close_command_time(plan.t_catch, self.lead, self.assumed_latency, self.pad_lead)
+        if self.t_close_first == np.inf:
+            self.t_close_first = self.t_close
         return self.t_close
 
     def _calc_arm(self, context, output):
@@ -438,7 +456,8 @@ class CatchRun:
         if not plan.solve_ok:
             return math.nan
         v_max, _ = toss.arm_limits(self.plant)
-        during = (self.log.t >= plan.q_traj.start_time()) & (self.log.t <= plan.t_catch)
+        first = next(p for p in self.plans if p.solve_ok)
+        during = (self.log.t >= first.q_traj.start_time()) & (self.log.t <= plan.t_catch)
         return float((np.abs(self.log.arm_v[during]) / v_max).max())
 
 
@@ -462,7 +481,7 @@ def build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode, late
                     sensor.GetInputPort("body_spatial_velocities"))
 
     policy = policy_factory(CatchPlanner(shared_kinematics(), plan))
-    fit = BallisticFit(plan.t_release, sigma_p, sigma_v)
+    fit = getattr(policy, "fit_class", BallisticFit)(plan.t_release, sigma_p, sigma_v)
     controller = builder.AddSystem(CatchController(plan, policy, fit, latency, lead, compute_latency, pad_lead,
                                                    assumed_latency))
     builder.Connect(sensor.GetOutputPort("observation"), controller.GetInputPort("observation"))
