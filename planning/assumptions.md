@@ -30,22 +30,22 @@ section gets written from. Week 1 §8 listed the provisional values; this record
 | Quantity | Value | Basis |
 |---|---|---|
 | Acceleration limit on catch motions | Brake level, 13–23 rad/s² | The model has no acceleration limits and Drake enforces none. **State this in the paper as an assumption.** At swing-level acceleration the arm arrives far too late: `results/catch_feasibility.md` |
-| Joint torque during the catch | Joint 6 reaches its limit for about 40 ms early in the motion | Drake clips torque silently. It recovers well before arrival: `results/catch_timing.md` |
-| Joint speed during the catch | Measured peak 1.02 × limit on joint 2 | Drake doesn't enforce the velocity limit either. **State this in the paper.** Plans stay within 0.986 × limit; the overshoot is tracking |
-| Catch tilt | Gripper within 25° of up | The nominal catch uses 23.8°, so the ball comes in about 36° off the finger axis. Spec Q5: tighter limits lose reach on noisy tosses. At 15° there is no motion for 15 of 60 tosses, and it catches 27 against 42 at 25°. `results/catch_timing.md` |
+| Joint torque during the catch | Joint 6 reaches its limit for about 70 ms early in the motion | Drake clips torque silently. It recovers well before arrival: `results/catch_timing.md` |
+| Joint speed during the catch | Planned at 0.85 × rated (`catch.PLAN_SPEED_LIMIT`). Measured peak 0.96 × rated on a noiseless catch, and up to 1.11 × on noisy tosses at 0.10 s | Drake doesn't enforce the rating either. **State this in the paper.** At the toss's 0.986 × rated, 61 of 68 catches at one cell went more than 5% over, so the grid was re-run at 0.85. The limit is on the plan; the rest is tracking overshoot, which nothing stops: `results/approach_a.md` |
+| Catch tilt | Gripper within 25° of up | The nominal catch uses 23.8°, so the ball comes in about 36° off the finger axis. Spec Q5: tighter limits lose reach. At 15° the noiseless catch has no motion, and noisy tosses catch 5 of 60 against 42 at 25°. `results/catch_timing.md` |
 | Close latency | 30 ms, decision to command | Proposal's "small, fixed delta" |
 | Close timing | Pads aimed 3 ms before the ball, through the gripper's measured response by command phase | Replaces the spec's fixed 25 ms gripper time. The pads can't arrive 20 to 29 ms after a WSG controller update: `results/catch_timing.md` |
 | Catch definition | Both fingers touching the ball and grip force above 1 N, continuously for 0.5 s from when the fingers stop | Spec §13.3, and the headline metric. **This counts a ball perched on the pads' edges**, which includes the default noiseless catch, so every table also reports on-pad catches, where the ball's center ends within 1 cm of the pad's center along both axes. State both in the paper. The spec says only "non-zero" force; 1 N is this code's choice, and it sets the early edge of the timing window: `results/catch_timing.md` |
 | Single catches | Approaches are compared on single catches | **A departure from the proposal's consecutive cycles, so the team should agree to it and the paper should say so.** A multi-cycle demo for the video stays possible, but whether a perched ball survives the arm moving hasn't been tested |
-| Solve time | Approach A and the baseline are charged none: a plan takes effect at the tick it is decided | Spec §5.4, and §9 of B's spec. Cold solves took a median of 0.42 s and a p95 of 0.64 s of wall clock (7 workers in parallel on a laptop). **State this in the paper.** With solves that slow, a real system couldn't plan this way at either window |
+| Solve time | Approach A and the baseline are charged none: a plan takes effect at the tick it is decided | Spec §5.4, and §9 of B's spec. At 2 mm, 0.04 m/s, 0.10 s, cold solves took a median of 0.37 s and a p95 of 0.72 s of wall clock (7 workers in parallel on a laptop). **State this in the paper.** With solves that slow, a real system couldn't plan this way at either window |
 
 ## Sensing
 
 | Quantity | Value | Basis |
 |---|---|---|
 | Observation mode | Position only is the headline | Spec §6.2. Changed from Week 1's position-and-velocity default, because a clean velocity channel measures the sensor rather than the strategy |
-| Rate, noise | 100 Hz, σ_p swept | Spec §6.3 has 5 mm as nominal. *Open:* the nominal cell, from `results/approach_a.md` |
-| Fit window | 10 samples, 0.01 to 0.10 s after release, or 15 samples to 0.15 s | Spec §14 has 0.10 s. *Open:* 0.15 s catches more in 8 of the 9 cells compared and ties the other: `results/approach_a.md`. The sample at release is excluded because the ball is still in the fingers |
+| Rate, noise | 100 Hz, σ_p swept | Spec §6.3 has 5 mm as nominal. *Open:* the nominal cell. `results/approach_a.md` recommends 2 mm |
+| Fit window | 10 samples, 0.01 to 0.10 s after release | Spec §14 has 0.10 s. *Open until the cell is chosen,* though `results/approach_a.md` recommends keeping it: 0.15 s loses to 0.10 s in all six cells compared, and 0.125 s depends on the sensor. The sample at release is excluded because the ball is still in the fingers |
 | Prediction error from that window | **2.87 cm**, 1σ per axis | Measured against the formula on the same samples. The 2.5 cm in the feasibility report and the spec counts 11 samples, including the one at release |
 | When flight starts | The commanded release time | Spec §7.1. The robot knows when it opened its fingers |
 | Controller rate | 200 Hz, ticking 1 ms after each 5 ms mark | So a tick sees the sensor sample from the same millisecond; on the same tick it would see the previous one |
@@ -53,8 +53,8 @@ section gets written from. Week 1 §8 listed the provisional values; this record
 ## The driver
 
 **Decision: keep `control_mode: position_only`.** Spec §14 asks for a change if tracking error is a
-significant fraction of the tolerance. It is 0.56 cm at arrival, against measured sideways tolerances of
-about ±2 cm and an estimator error of 2.87 cm at the nominal noise. It builds up while the plan decelerates into
+significant fraction of the tolerance. It is 0.55 cm at arrival, against measured sideways tolerances of
+about ±2 cm and an estimator error of 2.87 cm at σ_p = 5 mm. It builds up while the plan decelerates into
 the catch and takes about 200 ms to decay afterward, and the noiseless catch works with it. A new driver would
 also change how the toss tracks, which would then need re-checking against the joint limits, so the other drivers
 weren't tried. Evidence: `results/catch_timing.md`.
@@ -71,22 +71,25 @@ weren't tried. Evidence: `results/catch_timing.md`.
   the motion stays pinned. The fit repeats only to about 1e-13, so this happens on some re-runs, even with no noise at
   all. The baseline has no fit, and a noiseless baseline repeated exactly in 5 re-runs.
 
-Six cells of the grid were run twice, 600 trials in all:
+Six cells of the grid at the speed limit were run twice, 600 trials in all:
 
 | What | Largest difference |
 |---|---|
 | Any outcome (caught, on pad, contact, solve) | None changed, and every cell's counts matched |
-| What the fit saw (predicted miss, timing error) | 1e-13 |
-| Where the arm and the ball met (miss, arrival error) | 0.21 mm |
-| Where a held ball ended | 0.29 mm |
-| Where a dropped ball came to rest | 1.24 cm |
+| What the fit saw (predicted miss, timing error) | Under 1e-9, except 2e-6 on the one trial whose ball touched the hand before the catch plane, since its crossing is extrapolated from where it touched |
+| Where the arm and the ball met (miss, arrival error) | 0.88 mm |
+| Peak speed | 0.3% of rated speed |
+| How long the ball was held | 1 ms |
+| Where a held ball ended | 1.9 mm |
+| Where a dropped ball came to rest | 12.6 cm |
 
-So `trials.csv_differences` compares outcomes exactly, what the fit saw within 1e-9, what follows the solve within
-1 mm, and doesn't compare where a dropped ball rests. `python trials.py repeat` runs the check. Those tolerances were set
-after seeing this data, so the 600 trials show what the spread is rather than testing them independently.
+So `trials.csv_differences` compares outcomes exactly, what the fit saw within 1e-9 (1e-5 for those two columns), what follows
+the solve within 5e-3, meaning 5 mm, 5 ms or 0.5% of rated speed, and doesn't compare where a dropped ball rests. `python trials.py repeat`
+runs the check. Those tolerances were set after seeing this data, and widened once after seeing it at the speed limit, so these trials
+show what the spread is rather than testing them independently.
 
-A trial sitting right on the edge of an outcome could still flip. None did in 600, which bounds that at about 0.5% of
-trials at 95% confidence, small against the roughly ±10 points of a 100-trial cell. Rounding the target before the solve
+A trial sitting right on the edge of an outcome could still flip. None did in these 600, or in 600 at the earlier limit, which bounds
+that at about 0.25% of trials at 95% confidence, small against the roughly ±10 points of a 100-trial cell. Rounding the target before the solve
 might remove most of the spread, but it wasn't tried.
 
 - Tests compare within 1e-9 up to the solve, and with the tolerances above after it. An earlier version compared

@@ -16,20 +16,21 @@ apply here too.
 `T_GRIPPER` is gone: use `catch.close_command_time`, which looks up the gripper's response by command phase. §6.3's
 accuracy table counts the sample at release, which the fit excludes, so A's figure at 0.10 s is 2.87 cm rather than
 2.5 cm, and B's early figures are similarly optimistic. B3's "identical" has to mean within a tolerance, because
-Drake repeats to about 1e-12 m rather than bit for bit, and the solver can turn that into about 0.2 mm: use
+Drake repeats to about 1e-12 m rather than bit for bit, and the solver can turn that into about 2 mm: use
 `trials.csv_differences`, and see `planning/assumptions.md`. A policy gets the commanded state as the spec says, and
 `CatchController` already takes `compute_latency`. Toss noise is `simulate_catch(sigma_lat=, sigma_vz=)`. §12's predicted
-collapse at σ_lat = 0.08 m/s may need a larger level: with a perfect sensor Approach A still catches 51 of 60 there.
+collapse at σ_lat = 0.08 m/s may need a larger level: with a perfect sensor Approach A still catches 40 of 60 there.
 
-Three results from step 9 of A's plan bear on this spec (`results/approach_a.md`):
+Four results from step 9 of A's plan bear on this spec (`results/approach_a.md`):
 
 - **The hypothesis's cell may move.** A's nominal cell and window are still to be chosen, and §1 is written at the old one.
-- **`T_FIRST_SOLVE` shouldn't follow A's window if that moves to 0.15 s.** §5 imports it "by definition", but at 0.15 s A
-  loses tosses for lack of time to reach them: 21 of 100 at σ_p = 3 mm, σ_lat = 0.04 m/s, against 5 at 0.10 s. B keeping its
-  first solve at 0.10 s is what could recover those. The B-with-replanning-off test would then set its first solve to A's
-  window explicitly. *Needs a team decision.*
-- **Cold solves are slow against `tau_compute` at the measured p95 (§9).** A's solves took a median of 0.42 s and a p95 of
-  0.64 s (7 workers in parallel on a laptop), with 0.475 s between 0.10 s and the catch. B6 has to show that warm starts
+- **Catch motions are planned at 0.85 of rated speed**, for every approach (`catch.PLAN_SPEED_LIMIT`). §7.3's correction envelope was
+  worked out at the toss's limit, so expect it to be smaller. It hasn't been re-measured.
+- **`T_FIRST_SOLVE` needs no change if the recommended cell is chosen**, since its window is 0.10 s. An earlier version of this note argued
+  against importing it, for a window of 0.15 s, but 0.15 s no longer works. If the team picks 0.125 s the question comes back: A loses
+  tosses for lack of time there, and B starting at 0.10 s could recover them. *A team decision in that case.*
+- **Cold solves are slow against `tau_compute` at the measured p95 (§9).** At the recommended cell A's solves took a median of 0.37 s and a
+  p95 of 0.72 s (7 workers in parallel on a laptop), with 0.475 s between 0.10 s and the catch. B6 has to show that warm starts
   change this a great deal, or the latency model needs another look.
 
 ---

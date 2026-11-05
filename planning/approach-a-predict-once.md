@@ -27,16 +27,19 @@ changed a few things below, which are left as written for the record. The eviden
   perches it on their edges. §13.3 stays the headline, with a 1 N grip threshold and perches counted, and every table
   reports on-pad catches beside it. See `results/catch_timing.md`.
 - **"Bit-identical" (A4, A5) isn't achievable.** Drake repeats to about 1e-12 m, and the solver can turn that into about
-  0.2 mm. Over 600 repeated trials no outcome changed, so outcomes compare exactly and measurements within a tolerance:
+  2 mm. Over 600 repeated trials no outcome changed, so outcomes compare exactly and measurements within a tolerance:
   `planning/assumptions.md`.
 - **Q2 is answered:** the driver stays `position_only`.
 - **Q8 is answered:** toss noise goes onto the ball's velocity 8 ms after release, so §12's discards and
   `toss_infeasible` don't arise. A4 passes.
-- **At the nominal cell of §13.4, the baseline beats A**, 81 to 16 of 100, because the one-shot fit's error exceeds the
-  toss noise. σ_lat = 0.08 m/s doesn't defeat the arm as §12 expected. See `results/approach_a.md`.
-- **§14's window choice doesn't hold up.** §14 expected failures at 0.15 s. Instead 0.15 s catches more than 0.10 s in 8
-  of the 9 cells compared and ties the other. At σ_p = 5 mm it does more for A than going to 3 mm: 16 to 55 of 100, against
-  16 to 41. Q3's cell and the window are still to be chosen: `results/approach_a.md` has the grid and a recommendation.
+- **At the nominal cell of §13.4, the baseline beats A**, 80 to 16 of 100, because the one-shot fit's error exceeds the
+  toss noise. σ_lat = 0.08 m/s doesn't defeat the arm as §12 expected: with a perfect sensor A catches 40 of 60. See
+  `results/approach_a.md`.
+- **Catch motions are planned at 0.85 of rated speed** (`catch.PLAN_SPEED_LIMIT`), beyond what §9 asks for. At the toss's 0.986
+  they relied on speeds the arm isn't rated for, because Drake doesn't enforce the rating: at one cell, 61 of 68 catches went more than
+  5% over. This applies to every approach. The shortest motion to the nominal catch is then 0.436 s rather than §14's 0.410 s.
+- **§14's expectation about 0.15 s holds at that limit.** 0.15 s loses to 0.10 s in all six cells compared. Q3's cell is still to be
+  chosen: `results/approach_a.md` has the grid and recommends σ_p = 2 mm, σ_lat = 0.04 m/s, 0.10 s.
 - **Q5 and Q7 are answered:** the tilt limit stays at 25°, and 1 ms is small enough. See `results/catch_timing.md`.
 - **Q6: single catches only.** This departs from the proposal, so the team should agree to it, and the paper should say so.
 
