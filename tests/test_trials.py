@@ -201,6 +201,24 @@ class CsvTest(unittest.TestCase):
         self.assertEqual(float(row["predicted_miss"]), 0.02)
         self.assertTrue(math.isnan(float(row["miss_vertical"])))
 
+    def test_a_drawn_delay_survives_the_round_trip(self):
+        trials.write_csv([record(sigma_latency=0.0025, latency_drawn=0.0263)], self.path)
+        row = trials.read_csv(self.path)[0]
+        self.assertEqual(float(row["sigma_latency"]), 0.0025)
+        self.assertEqual(float(row["latency_drawn"]), 0.0263)
+
+    def test_a_saved_file_without_the_new_columns_still_loads(self):
+        """results/robustness.csv predates them, and extend has to read it."""
+        import replan_trials
+        trials.write_csv([record()], self.path)
+        text = self.path.read_text().splitlines()
+        header = [name for name in text[0].split(",") if name not in ("sigma_latency", "latency_drawn")]
+        keep = [text[0].split(",").index(name) for name in header]
+        self.path.write_text("\n".join(",".join([line.split(",")[i] for i in keep]) for line in text) + "\n")
+        loaded = replan_trials.read_results(self.path)
+        self.assertEqual(loaded[0].sigma_latency, 0.0)
+        self.assertTrue(math.isnan(loaded[0].latency_drawn))
+
     def test_the_same_results_compare_equal(self):
         trials.write_csv([record(), record(trial=1)], self.path)
         trials.write_csv([record(), record(trial=1)], self.other)

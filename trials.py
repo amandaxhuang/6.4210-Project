@@ -77,9 +77,10 @@ class TrialConfig:
     obs_mode: str = sensing.POSITION_ONLY
     sigma_lat: float = 0.04
     sigma_vz: float = 0.02
-    latency: float = catch.T_LATENCY
+    latency: float = catch.T_LATENCY  # the delay itself, or its mean when sigma_latency is given
     assumed_latency: float | None = None  # what the trigger allows for, if not the latency itself
     t_window: float = catch.T_WINDOW  # how long Approach A observes before deciding
+    sigma_latency: float = 0.0  # spread of the gripper's delay, drawn per trial; 0 is a fixed delay
 
     def policy_factory(self):
         if self.approach == "predict_once":
@@ -134,6 +135,8 @@ class TrialResult:
     assumed_latency: float | None = None
     plan_stop_error: float = math.nan  # where the plan stops, from its target: results/replan_timing.md
     tracking_error: float = math.nan  # where the arm got to, from where the plan stops
+    sigma_latency: float = 0.0  # the cell's spread on the gripper's delay
+    latency_drawn: float = math.nan  # the delay this trial's gripper really waited
 
 
 def release_state(run) -> tuple[np.ndarray, np.ndarray]:
@@ -151,7 +154,8 @@ def simulate(config: TrialConfig) -> tuple[catch.CatchRun, float]:
     start = time.perf_counter()
     run = catch.simulate_catch(config.policy_factory(), sigma_p=config.sigma_p, sigma_v=config.sigma_v,
                                obs_mode=config.obs_mode, latency=config.latency, assumed_latency=config.assumed_latency,
-                               sigma_lat=config.sigma_lat, sigma_vz=config.sigma_vz, trial=config.trial)
+                               sigma_lat=config.sigma_lat, sigma_vz=config.sigma_vz,
+                               sigma_latency=config.sigma_latency, trial=config.trial)
     return run, time.perf_counter() - start
 
 
@@ -180,6 +184,7 @@ def record(config: TrialConfig, run: catch.CatchRun, wall_time: float) -> TrialR
         p_release_true_x=float(p0[0]), p_release_true_y=float(p0[1]), p_release_true_z=float(p0[2]),
         v_release_true_x=float(v0[0]), v_release_true_y=float(v0[1]), v_release_true_z=float(v0[2]),
         plan_stop_error=float(o.plan_stop_error), tracking_error=float(o.tracking_error),
+        sigma_latency=config.sigma_latency, latency_drawn=float(run.controller.latency),
     )
 
 
@@ -253,7 +258,9 @@ def _config_key(row: dict[str, str], config_type: type = TrialConfig) -> tuple:
         except ValueError:
             return cell
 
-    return tuple(value(row[f.name]) for f in fields(config_type))
+    # A file written before a setting existed was run at that setting's default, so a missing
+    # column is that default rather than a reason to fail.
+    return tuple(value(row[f.name]) if f.name in row else f.default for f in fields(config_type))
 
 
 def repeat_check(configs: list[TrialConfig], saved_path: Path = CSV_PATH, runner=run_trial) -> list[str]:

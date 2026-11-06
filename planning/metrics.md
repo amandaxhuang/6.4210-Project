@@ -4,6 +4,9 @@ The list the paper reports, what each number means, and where it comes from. Eve
 says otherwise. `results/robustness.md` shows all of them at the nominal cell.
 
 **Status:** proposed final list, 2026-11-05, tested on every cell of the robustness sweep. Team to confirm.
+**Updated 2026-11-06:** `latency_drawn` added, for the close-latency sweep and the cells that draw the delay per toss
+(`planning/close-latency-sweep.md`). `results/robustness.md` now also shows the whole list at every close-latency cell,
+not only at the nominal one.
 
 ## What to report
 
@@ -22,6 +25,7 @@ says otherwise. `results/robustness.md` shows all of them at the nominal cell.
 | How B works | Target moved | `plan_drift` | Distance from the first plan's target to the last's |
 | How B works | Close decision moved | `trigger_shift` | The last close decision's time, minus the first's |
 | How B works | Solves | `n_solves`, `solves_skipped`, `solve_failures` | How many ran, how many were skipped as too small to matter, and how many failed |
+| The gripper's delay | What the gripper really waited | `latency_drawn` | The delay between the decision to close and the fingers starting to move, on this trial. It equals `latency` wherever the delay is fixed, and is the per-trial draw where `sigma_latency` is set, clipped at 0. Reported as the median, 1 sigma and the 5th and 95th percentiles of a cell, with how many draws clipped, so the sampler can be checked against what was asked for. The same trial draws the same delay under every approach, which is what keeps the drawn cells paired (`planning/close-latency-sweep.md`) |
 | Cost | Solve time | `results/replan_timing.md` | Median and p95, run one trial at a time. The trial record's `solve_time` comes from parallel workers, which about double it, so don't report that |
 | Reach | Movement needed | Worked out from `p_release_true_*`, `v_release_true_*` | Distance from where the brake leaves the pinch point to where this toss really comes down. The proposal's "movement needed from ball release to catch" |
 

@@ -36,16 +36,26 @@ comparisons, so a p near 0.05 among them is a hint. The 0.12 m/s level of latera
      about 1.5 cm of error whether or not the toss needed one. B never does worse than the baseline here. Gating A's correction on its own
      uncertainty (B's spec, §15 Q3) might fix this, but it would change A, so it hasn't been tried.
 4. **Vertical toss noise barely matters** to A or B, at 62 to 65 and 85 to 87 of 100. It costs the baseline, from 45 down to 34.
-5. **The gripper's timing matters more than any noise.** The trigger still assumes 30 ms here.
-   - At a real latency of 0 ms nothing is caught: the fingers close 30 ms early and the ball lands on them, with contact on 99.
-   - At 20 ms, closing 10 ms early, B keeps 65 of 100, A 24 and the baseline 17.
-   - At 50 ms, closing 20 ms late, B keeps 1, A 12 and the baseline 26. **This is the one cell where B does clearly worse than A,** 0 only B
-     and 11 only A (p = 0.001). B's spec (§12) asks for that to be reported rather than engineered away. The likely mechanism is that B puts
-     the pads where the ball is, so a ball the late fingers miss passes straight through. The baseline's and A's catches here are of tosses
-     they had placed badly: the caught ones have a larger median predicted miss than the missed ones, 2.7 against 2.1 cm for the baseline and
-     2.1 against 1.6 for A, and the ball ends 2.7 to 3.2 cm past the pinch point. That fits a ball slowed by hitting a finger first, which
-     hasn't been checked in simulation.
-   - 10 ms late wasn't run. **A real gripper's latency would have to be measured, not assumed.**
+5. **The gripper's timing matters more than any noise, and B is the most sensitive of the three to it.** Swept at every 5 ms from 0 to 50 ms,
+   with the trigger always assuming 30 ms, and also drawn per toss. `results/close-latency/` is the full write-up; the headline is that
+   **B's tolerance is sharply asymmetric — about 14 ms early against 6 ms late.**
+   - At a real latency of 0 ms nothing is caught: the fingers close 30 ms early and the ball lands on them, with contact on 99. The same holds
+     at 5 ms, and 10 ms catches 3, 2 and 6.
+   - B is the best of the three at every level from 10 to 30 ms, by a long way in the middle: 65 against 24 and 17 at 20 ms, 84 against 44 and
+     28 at 25 ms.
+   - **B's collapse is a cliff between 35 and 40 ms**, 49 down to 3 in one 5 ms step. A overtakes it at about 37 ms: the two are tied at 35 ms
+     (18 only B / 24 only A, p = 0.44) and A wins decisively at 40 (1 / 33, p = 4e-9). The earlier sweep had levels only at 30 and 50 ms, so it
+     reported the 50 ms cell as "the one cell where B does clearly worse" — it is really the tail of a crossover 13 ms earlier.
+   - B's spec (§12) asks for that to be reported rather than engineered away. **The mechanism is now measured, not just likely:** `end_fingers`
+     goes negative past 35 ms (B: 0.95 cm at 30 ms, -0.76 at 35, -0.63 at 40), so the caught ball ends on the far side of the pinch point. B puts
+     the pads where the ball is, so late fingers let it pass through; the baseline and A place it badly enough that a late finger still clips it,
+     which is why they keep 26 and 12 at 50 ms while B keeps 1. Being accurate is what makes B fragile to bad timing.
+   - **A delay drawn per toss is just this curve, sampled.** At sigma = 2.5 ms and 13.7 ms around a 27.5 ms mean, each cell's catch rate is within
+     3 points of the fixed curve averaged over the delays it drew, and where a draw landed within 1.25 ms of a swept level it agreed with the same
+     toss at that level 43 of 43 times for every approach. Wide jitter roughly halves B, 87 to 44, losing 43 tosses and gaining none (p = 2e-13),
+     but costs it no more than the delays it happened to draw.
+   - **A real gripper's latency distribution would have to be measured, not assumed** — and once measured, the row above says it can be evaluated
+     from the constant-latency curve without simulating it.
 6. **A velocity sensor nearly closes the gap.** With position and velocity, A catches 81 and B 84, 3 / 0 (p = 0.25). A's median predicted
    miss halves, from 1.69 to 0.92 cm, and B's stays near 0.15 cm. So most of B's edge at the nominal cell is in estimating the velocity from
    positions, which it does better by watching for longer.
@@ -79,8 +89,20 @@ comparisons, so a p near 0.05 among them is a hint. The 0.12 m/s level of latera
 | `caught_by_close_latency.png` | Finding 5 |
 | `caught_by_both_noises.png` | Finding 7 |
 | `caught_by_target_moved.png` | Finding 9, spec §11.3's figure |
+| `caught_by_latency_cell.png` | Finding 5: a delay drawn per toss, against fixed delays either side of its mean |
+| `caught_by_realized_latency.png` | Finding 5: whether a drawn delay behaves like the fixed delay it drew, one panel per approach |
+| `latency_metrics_panels.png` | Finding 5: timing error, where the ball ends, on the pad, and contact against latency |
+| `latency_draws.png` | Finding 5: what the sampler drew, against what it was asked for |
 
 Each line is caught of 100, with its 95% interval shaded. The levels are evenly spaced whatever their values, so read slopes with care.
+**No figure writes its counts on the lines:** every number in one is in a table above, which is also what relieves the baseline's colour of
+carrying identity on its own, since it sits below 3:1 against the surface.
+
+## Tables
+
+`python tables.py` draws every generated table below as a PNG in `results/tables/`, numbered in the order they appear here, with the wide
+headers wrapped rather than run together. The markdown stays the source — nothing in that script computes a number — so run it after
+`python robustness.py report` and the two cannot disagree.
 
 ## Reproducibility
 
@@ -145,9 +167,45 @@ Every row is 100 tosses, position-only with 30 ms of close latency unless it say
 | real latency | baseline caught | A caught | B caught | B against A: only B / only A, p | on pad, A / B | caught ball ends along the fingers, median, A / B (cm) | contact, A / B | stayed on the baseline's plan, A / B | failed solves per trial, B | predicted miss, median, A / B (cm) | timing error, 1 sigma, A / B (ms) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 0 ms | 0 / 100 (0–4%) | 0 / 100 (0–4%) | 0 / 100 (0–4%) | 0 / 0, p = 1 | 0 / 0 | - / - | 99 / 99 | 19 / 13 | 1.6 | 1.7 / 0.1 | 4.1 / 1.3 |
+| 5 ms | 0 / 100 (0–4%) | 0 / 100 (0–4%) | 0 / 100 (0–4%) | 0 / 0, p = 1 | 0 / 0 | - / - | 99 / 99 | 19 / 13 | 1.6 | 1.7 / 0.1 | 4.1 / 1.3 |
+| 10 ms | 3 / 100 (1–8%) | 2 / 100 (1–7%) | 6 / 100 (3–12%) | 4 / 0, p = 0.12 | 0 / 0 | 2.01 / 2.50 | 98 / 98 | 19 / 13 | 1.6 | 1.7 / 0.1 | 4.1 / 1.3 |
+| 15 ms | 9 / 100 (5–16%) | 9 / 100 (5–16%) | 35 / 100 (26–45%) | 26 / 0, p = 3e-08 | 0 / 0 | 2.28 / 2.35 | 98 / 98 | 19 / 13 | 1.6 | 1.7 / 0.1 | 4.1 / 1.3 |
 | 20 ms | 17 / 100 (11–26%) | 24 / 100 (17–33%) | 65 / 100 (55–74%) | 43 / 2, p = 5.9e-11 | 0 / 0 | 2.10 / 2.19 | 98 / 98 | 19 / 13 | 1.6 | 1.7 / 0.1 | 4.1 / 1.3 |
+| 25 ms | 28 / 100 (20–37%) | 44 / 100 (35–54%) | 84 / 100 (76–90%) | 41 / 1, p = 2e-11 | 1 / 0 | 2.03 / 1.92 | 98 / 98 | 19 / 13 | 1.6 | 1.7 / 0.1 | 4.1 / 1.3 |
 | 30 ms | 44 / 100 (35–54%) | 62 / 100 (52–71%) | 87 / 100 (79–92%) | 25 / 0, p = 6e-08 | 13 / 48 | 1.35 / 0.95 | 98 / 98 | 19 / 13 | 1.6 | 1.7 / 0.1 | 4.1 / 1.3 |
+| 35 ms | 41 / 100 (32–51%) | 55 / 100 (45–64%) | 49 / 100 (39–59%) | 18 / 24, p = 0.44 | 11 / 25 | 0.35 / -0.76 | 95 / 96 | 19 / 13 | 1.6 | 1.7 / 0.2 | 4.1 / 1.3 |
+| 40 ms | 39 / 100 (30–49%) | 35 / 100 (26–45%) | 3 / 100 (1–8%) | 1 / 33, p = 4.1e-09 | 10 / 2 | -0.26 / -0.63 | 93 / 96 | 19 / 13 | 1.6 | 1.7 / 0.2 | 4.1 / 1.3 |
+| 45 ms | 30 / 100 (22–40%) | 17 / 100 (11–26%) | 0 / 100 (0–4%) | 0 / 17, p = 1.5e-05 | 5 / 0 | -0.49 / - | 92 / 95 | 19 / 13 | 1.6 | 1.7 / 0.2 | 4.1 / 1.3 |
 | 50 ms | 26 / 100 (18–35%) | 12 / 100 (7–20%) | 1 / 100 (0–5%) | 0 / 11, p = 0.00098 | 1 / 0 | -2.65 / 2.51 | 90 / 93 | 19 / 13 | 1.6 | 1.7 / 0.2 | 4.1 / 1.3 |
+
+## Close latency drawn per toss, with the trigger still assuming 30 ms
+
+| spread of the delay | baseline caught | A caught | B caught | B against A: only B / only A, p | on pad, A / B | caught ball ends along the fingers, median, A / B (cm) | contact, A / B | stayed on the baseline's plan, A / B | failed solves per trial, B | predicted miss, median, A / B (cm) | timing error, 1 sigma, A / B (ms) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| sigma 2.5 ms | 39 / 100 (30–49%) | 51 / 100 (41–61%) | 84 / 100 (76–90%) | 34 / 1, p = 2.1e-09 | 7 / 13 | 1.66 / 1.63 | 98 / 98 | 19 / 13 | 1.6 | 1.7 / 0.1 | 4.1 / 1.3 |
+| sigma 13.7 ms | 25 / 100 (18–34%) | 32 / 100 (24–42%) | 44 / 100 (35–54%) | 23 / 11, p = 0.058 | 5 / 7 | 0.56 / 1.78 | 94 / 96 | 19 / 13 | 1.6 | 1.7 / 0.1 | 4.1 / 1.3 |
+
+## What the sampler drew
+
+| cell | mean asked (ms) | sigma asked (ms) | drawn mean (ms) | drawn sigma (ms) | drawn 5th (ms) | drawn 95th (ms) | clipped at 0 | same draw for every approach |
+|---|---|---|---|---|---|---|---|---|
+| mean 27.5 ms, sigma 2.5 ms | 27.5 | 2.5 | 27.6 | 2.3 | 23.9 | 31.0 | 0 of 100 | yes |
+| mean 27.5 ms, sigma 13.7 ms | 27.5 | 13.7 | 27.9 | 12.4 | 7.6 | 46.6 | 1 of 100 | yes |
+
+## A drawn delay against the fixed level nearest it
+
+| spread | delay drawn (ms) | tosses | caught, baseline / A / B | nearest fixed level | caught of 100 there, baseline / A / B |
+|---|---|---|---|---|---|
+| sigma 2.5 ms | 22.3 to 25.7 | 20 | 8 (40%) / 8 (40%) / 18 (90%) | 25 ms | 28 / 44 / 84 |
+| sigma 2.5 ms | 25.7 to 26.9 | 20 | 8 (40%) / 8 (40%) / 17 (85%) | 25 ms | 28 / 44 / 84 |
+| sigma 2.5 ms | 26.9 to 27.9 | 20 | 6 (30%) / 9 (45%) / 16 (80%) | 25 ms | 28 / 44 / 84 |
+| sigma 2.5 ms | 27.9 to 29.5 | 20 | 5 (25%) / 13 (65%) / 16 (80%) | 30 ms | 44 / 62 / 87 |
+| sigma 2.5 ms | 29.5 to 34.4 | 20 | 12 (60%) / 13 (65%) / 17 (85%) | 30 ms | 44 / 62 / 87 |
+| sigma 13.7 ms | 0.0 to 17.5 | 20 | 0 (0%) / 1 (5%) / 3 (15%) | 15 ms | 9 / 9 / 35 |
+| sigma 13.7 ms | 17.8 to 24.4 | 20 | 5 (25%) / 4 (20%) / 14 (70%) | 20 ms | 17 / 24 / 65 |
+| sigma 13.7 ms | 24.4 to 29.9 | 20 | 5 (25%) / 8 (40%) / 15 (75%) | 25 ms | 28 / 44 / 84 |
+| sigma 13.7 ms | 29.9 to 38.4 | 20 | 7 (35%) / 12 (60%) / 10 (50%) | 35 ms | 41 / 55 / 49 |
+| sigma 13.7 ms | 38.5 to 65.1 | 20 | 8 (40%) / 7 (35%) / 2 (10%) | 45 ms | 30 / 17 / 0 |
 
 ## Position and velocity sensing
 
@@ -194,4 +252,254 @@ Every row is 100 tosses, position-only with 30 ms of close latency unless it say
 | 40.10 to 41.04 | 25 | 20 | 18 | 25 |
 | 41.04 to 44.23 | 25 | 2 | 8 | 13 |
 
-6600 trials, 8.1 s per trial on average per worker.
+## Every metric at each close latency
+
+### 0 ms, fixed
+
+| metric | baseline | A | B |
+|---|---|---|---|
+| Caught (primary) | 0 / 100 (0–4%) | 0 / 100 (0–4%) | 0 / 100 (0–4%) |
+| Contact | 99 | 99 | 99 |
+| Caught on the pad | 0 | 0 | 0 |
+| Caught ball ends along the fingers, median (cm) | - | - | - |
+| Caught within 1.05x of rated speed | 0 | 0 | 0 |
+| Predicted miss, median (cm) | 2.39 | 1.69 | 0.15 |
+| Timing error, 1 sigma (ms) | 3.9 | 4.1 | 1.3 |
+| Plan stop error, median (cm) | 0.52 | 0.52 | 0.52 |
+| Tracking error, median (cm) | 0.70 | 0.70 | 0.70 |
+| Peak speed, worst (of rated) | 0.96 | 1.04 | 1.03 |
+| Solves, median | 1 | 2 | 7 |
+| Failed solves, total | 0 | 19 | 158 |
+| Target moved, median (cm) | - | 1.92 | 1.96 |
+| Close decision moved, median (ms) | - | 1.5 | 0.5 |
+
+### 5 ms, fixed
+
+| metric | baseline | A | B |
+|---|---|---|---|
+| Caught (primary) | 0 / 100 (0–4%) | 0 / 100 (0–4%) | 0 / 100 (0–4%) |
+| Contact | 99 | 99 | 99 |
+| Caught on the pad | 0 | 0 | 0 |
+| Caught ball ends along the fingers, median (cm) | - | - | - |
+| Caught within 1.05x of rated speed | 0 | 0 | 0 |
+| Predicted miss, median (cm) | 2.39 | 1.69 | 0.15 |
+| Timing error, 1 sigma (ms) | 3.9 | 4.1 | 1.3 |
+| Plan stop error, median (cm) | 0.52 | 0.52 | 0.52 |
+| Tracking error, median (cm) | 0.70 | 0.70 | 0.70 |
+| Peak speed, worst (of rated) | 0.96 | 1.04 | 1.03 |
+| Solves, median | 1 | 2 | 7 |
+| Failed solves, total | 0 | 19 | 157 |
+| Target moved, median (cm) | - | 1.92 | 1.96 |
+| Close decision moved, median (ms) | - | 1.5 | 0.5 |
+
+### 10 ms, fixed
+
+| metric | baseline | A | B |
+|---|---|---|---|
+| Caught (primary) | 3 / 100 (1–8%) | 2 / 100 (1–7%) | 6 / 100 (3–12%) |
+| Contact | 98 | 98 | 98 |
+| Caught on the pad | 0 | 0 | 0 |
+| Caught ball ends along the fingers, median (cm) | 2.75 | 2.01 | 2.50 |
+| Caught within 1.05x of rated speed | 3 | 2 | 6 |
+| Predicted miss, median (cm) | 2.39 | 1.69 | 0.15 |
+| Timing error, 1 sigma (ms) | 3.9 | 4.1 | 1.3 |
+| Plan stop error, median (cm) | 0.52 | 0.52 | 0.52 |
+| Tracking error, median (cm) | 0.70 | 0.70 | 0.70 |
+| Peak speed, worst (of rated) | 0.96 | 1.04 | 1.03 |
+| Solves, median | 1 | 2 | 7 |
+| Failed solves, total | 0 | 19 | 157 |
+| Target moved, median (cm) | - | 1.92 | 1.96 |
+| Close decision moved, median (ms) | - | 1.5 | 0.5 |
+
+### 15 ms, fixed
+
+| metric | baseline | A | B |
+|---|---|---|---|
+| Caught (primary) | 9 / 100 (5–16%) | 9 / 100 (5–16%) | 35 / 100 (26–45%) |
+| Contact | 98 | 98 | 98 |
+| Caught on the pad | 0 | 0 | 0 |
+| Caught ball ends along the fingers, median (cm) | 2.44 | 2.28 | 2.35 |
+| Caught within 1.05x of rated speed | 9 | 9 | 35 |
+| Predicted miss, median (cm) | 2.39 | 1.69 | 0.15 |
+| Timing error, 1 sigma (ms) | 3.9 | 4.1 | 1.3 |
+| Plan stop error, median (cm) | 0.52 | 0.52 | 0.52 |
+| Tracking error, median (cm) | 0.70 | 0.70 | 0.70 |
+| Peak speed, worst (of rated) | 0.96 | 1.04 | 1.03 |
+| Solves, median | 1 | 2 | 7 |
+| Failed solves, total | 0 | 19 | 157 |
+| Target moved, median (cm) | - | 1.92 | 1.96 |
+| Close decision moved, median (ms) | - | 1.5 | 0.5 |
+
+### 20 ms, fixed
+
+| metric | baseline | A | B |
+|---|---|---|---|
+| Caught (primary) | 17 / 100 (11–26%) | 24 / 100 (17–33%) | 65 / 100 (55–74%) |
+| Contact | 98 | 98 | 98 |
+| Caught on the pad | 0 | 0 | 0 |
+| Caught ball ends along the fingers, median (cm) | 2.15 | 2.10 | 2.19 |
+| Caught within 1.05x of rated speed | 17 | 24 | 65 |
+| Predicted miss, median (cm) | 2.39 | 1.69 | 0.15 |
+| Timing error, 1 sigma (ms) | 3.9 | 4.1 | 1.3 |
+| Plan stop error, median (cm) | 0.52 | 0.52 | 0.52 |
+| Tracking error, median (cm) | 0.70 | 0.70 | 0.70 |
+| Peak speed, worst (of rated) | 0.96 | 1.04 | 1.03 |
+| Solves, median | 1 | 2 | 7 |
+| Failed solves, total | 0 | 19 | 158 |
+| Target moved, median (cm) | - | 1.92 | 1.96 |
+| Close decision moved, median (ms) | - | 1.5 | 0.5 |
+
+### 25 ms, fixed
+
+| metric | baseline | A | B |
+|---|---|---|---|
+| Caught (primary) | 28 / 100 (20–37%) | 44 / 100 (35–54%) | 84 / 100 (76–90%) |
+| Contact | 98 | 98 | 98 |
+| Caught on the pad | 0 | 1 | 0 |
+| Caught ball ends along the fingers, median (cm) | 1.80 | 2.03 | 1.92 |
+| Caught within 1.05x of rated speed | 28 | 44 | 84 |
+| Predicted miss, median (cm) | 2.39 | 1.69 | 0.15 |
+| Timing error, 1 sigma (ms) | 3.9 | 4.1 | 1.3 |
+| Plan stop error, median (cm) | 0.52 | 0.52 | 0.52 |
+| Tracking error, median (cm) | 0.70 | 0.70 | 0.70 |
+| Peak speed, worst (of rated) | 0.96 | 1.04 | 1.03 |
+| Solves, median | 1 | 2 | 7 |
+| Failed solves, total | 0 | 19 | 157 |
+| Target moved, median (cm) | - | 1.92 | 1.96 |
+| Close decision moved, median (ms) | - | 1.5 | 0.5 |
+
+### 30 ms, fixed
+
+| metric | baseline | A | B |
+|---|---|---|---|
+| Caught (primary) | 44 / 100 (35–54%) | 62 / 100 (52–71%) | 87 / 100 (79–92%) |
+| Contact | 98 | 98 | 98 |
+| Caught on the pad | 3 | 13 | 48 |
+| Caught ball ends along the fingers, median (cm) | 1.73 | 1.35 | 0.95 |
+| Caught within 1.05x of rated speed | 44 | 62 | 87 |
+| Predicted miss, median (cm) | 2.39 | 1.69 | 0.15 |
+| Timing error, 1 sigma (ms) | 3.9 | 4.1 | 1.3 |
+| Plan stop error, median (cm) | 0.52 | 0.52 | 0.52 |
+| Tracking error, median (cm) | 0.70 | 0.70 | 0.70 |
+| Peak speed, worst (of rated) | 0.96 | 1.04 | 1.03 |
+| Solves, median | 1 | 2 | 7 |
+| Failed solves, total | 0 | 19 | 158 |
+| Target moved, median (cm) | - | 1.92 | 1.96 |
+| Close decision moved, median (ms) | - | 1.5 | 0.5 |
+
+### 35 ms, fixed
+
+| metric | baseline | A | B |
+|---|---|---|---|
+| Caught (primary) | 41 / 100 (32–51%) | 55 / 100 (45–64%) | 49 / 100 (39–59%) |
+| Contact | 93 | 95 | 96 |
+| Caught on the pad | 14 | 11 | 25 |
+| Caught ball ends along the fingers, median (cm) | -0.28 | 0.35 | -0.76 |
+| Caught within 1.05x of rated speed | 41 | 55 | 49 |
+| Predicted miss, median (cm) | 2.39 | 1.69 | 0.15 |
+| Timing error, 1 sigma (ms) | 3.9 | 4.1 | 1.3 |
+| Plan stop error, median (cm) | 0.52 | 0.52 | 0.52 |
+| Tracking error, median (cm) | 0.70 | 0.70 | 0.70 |
+| Peak speed, worst (of rated) | 0.96 | 1.04 | 1.03 |
+| Solves, median | 1 | 2 | 7 |
+| Failed solves, total | 0 | 19 | 157 |
+| Target moved, median (cm) | - | 1.92 | 1.96 |
+| Close decision moved, median (ms) | - | 1.5 | 0.5 |
+
+### 40 ms, fixed
+
+| metric | baseline | A | B |
+|---|---|---|---|
+| Caught (primary) | 39 / 100 (30–49%) | 35 / 100 (26–45%) | 3 / 100 (1–8%) |
+| Contact | 93 | 93 | 96 |
+| Caught on the pad | 6 | 10 | 2 |
+| Caught ball ends along the fingers, median (cm) | -2.65 | -0.26 | -0.63 |
+| Caught within 1.05x of rated speed | 39 | 35 | 3 |
+| Predicted miss, median (cm) | 2.39 | 1.69 | 0.15 |
+| Timing error, 1 sigma (ms) | 3.9 | 4.1 | 1.3 |
+| Plan stop error, median (cm) | 0.52 | 0.52 | 0.52 |
+| Tracking error, median (cm) | 0.70 | 0.70 | 0.70 |
+| Peak speed, worst (of rated) | 0.96 | 1.04 | 1.03 |
+| Solves, median | 1 | 2 | 7 |
+| Failed solves, total | 0 | 19 | 157 |
+| Target moved, median (cm) | - | 1.92 | 1.96 |
+| Close decision moved, median (ms) | - | 1.5 | 0.5 |
+
+### 45 ms, fixed
+
+| metric | baseline | A | B |
+|---|---|---|---|
+| Caught (primary) | 30 / 100 (22–40%) | 17 / 100 (11–26%) | 0 / 100 (0–4%) |
+| Contact | 92 | 92 | 95 |
+| Caught on the pad | 0 | 5 | 0 |
+| Caught ball ends along the fingers, median (cm) | -3.10 | -0.49 | - |
+| Caught within 1.05x of rated speed | 30 | 17 | 0 |
+| Predicted miss, median (cm) | 2.39 | 1.69 | 0.15 |
+| Timing error, 1 sigma (ms) | 3.9 | 4.1 | 1.3 |
+| Plan stop error, median (cm) | 0.52 | 0.52 | 0.52 |
+| Tracking error, median (cm) | 0.70 | 0.70 | 0.70 |
+| Peak speed, worst (of rated) | 0.96 | 1.04 | 1.03 |
+| Solves, median | 1 | 2 | 7 |
+| Failed solves, total | 0 | 19 | 157 |
+| Target moved, median (cm) | - | 1.92 | 1.96 |
+| Close decision moved, median (ms) | - | 1.5 | 0.5 |
+
+### 50 ms, fixed
+
+| metric | baseline | A | B |
+|---|---|---|---|
+| Caught (primary) | 26 / 100 (18–35%) | 12 / 100 (7–20%) | 1 / 100 (0–5%) |
+| Contact | 89 | 90 | 93 |
+| Caught on the pad | 1 | 1 | 0 |
+| Caught ball ends along the fingers, median (cm) | -3.19 | -2.65 | 2.51 |
+| Caught within 1.05x of rated speed | 26 | 12 | 1 |
+| Predicted miss, median (cm) | 2.39 | 1.69 | 0.15 |
+| Timing error, 1 sigma (ms) | 3.9 | 4.1 | 1.3 |
+| Plan stop error, median (cm) | 0.52 | 0.52 | 0.52 |
+| Tracking error, median (cm) | 0.70 | 0.70 | 0.70 |
+| Peak speed, worst (of rated) | 0.96 | 1.04 | 1.03 |
+| Solves, median | 1 | 2 | 7 |
+| Failed solves, total | 0 | 19 | 158 |
+| Target moved, median (cm) | - | 1.92 | 1.96 |
+| Close decision moved, median (ms) | - | 1.5 | 0.5 |
+
+### Drawn per toss, mean 27.5 ms, sigma 2.5 ms
+
+| metric | baseline | A | B |
+|---|---|---|---|
+| Caught (primary) | 39 / 100 (30–49%) | 51 / 100 (41–61%) | 84 / 100 (76–90%) |
+| Contact | 98 | 98 | 98 |
+| Caught on the pad | 0 | 7 | 13 |
+| Caught ball ends along the fingers, median (cm) | 1.92 | 1.66 | 1.63 |
+| Caught within 1.05x of rated speed | 39 | 51 | 84 |
+| Predicted miss, median (cm) | 2.39 | 1.69 | 0.15 |
+| Timing error, 1 sigma (ms) | 3.9 | 4.1 | 1.3 |
+| Plan stop error, median (cm) | 0.52 | 0.52 | 0.52 |
+| Tracking error, median (cm) | 0.70 | 0.70 | 0.70 |
+| Peak speed, worst (of rated) | 0.96 | 1.04 | 1.03 |
+| Solves, median | 1 | 2 | 7 |
+| Failed solves, total | 0 | 19 | 157 |
+| Target moved, median (cm) | - | 1.92 | 1.96 |
+| Close decision moved, median (ms) | - | 1.5 | 0.5 |
+
+### Drawn per toss, mean 27.5 ms, sigma 13.7 ms
+
+| metric | baseline | A | B |
+|---|---|---|---|
+| Caught (primary) | 25 / 100 (18–34%) | 32 / 100 (24–42%) | 44 / 100 (35–54%) |
+| Contact | 94 | 94 | 96 |
+| Caught on the pad | 2 | 5 | 7 |
+| Caught ball ends along the fingers, median (cm) | 0.11 | 0.56 | 1.78 |
+| Caught within 1.05x of rated speed | 25 | 32 | 44 |
+| Predicted miss, median (cm) | 2.39 | 1.69 | 0.15 |
+| Timing error, 1 sigma (ms) | 3.9 | 4.1 | 1.3 |
+| Plan stop error, median (cm) | 0.52 | 0.52 | 0.52 |
+| Tracking error, median (cm) | 0.70 | 0.70 | 0.70 |
+| Peak speed, worst (of rated) | 0.96 | 1.04 | 1.03 |
+| Solves, median | 1 | 2 | 7 |
+| Failed solves, total | 0 | 19 | 157 |
+| Target moved, median (cm) | - | 1.92 | 1.96 |
+| Close decision moved, median (ms) | - | 1.5 | 0.5 |
+
+
+9300 trials, 7.5 s per trial on average per worker.

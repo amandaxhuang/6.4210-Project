@@ -41,7 +41,18 @@ SIGMAS_P = (0.0, 0.002, 0.005, 0.010, 0.020)  # m
 SIGMAS_LAT = (0.0, 0.01, 0.02, 0.04, 0.08, 0.12)  # m/s; 0.12 added after 0.08 didn't show B's spec's predicted collapse
 SIGMAS_VZ = (0.0, 0.02, 0.05)  # m/s
 ASSUMED_LATENCY = 0.03  # s; sweeping the real latency with the trigger told each value would change nothing
-LATENCIES = (0.0, 0.02, 0.03, 0.05)  # s
+LATENCIES = (0.0, 0.005, 0.010, 0.015, 0.020, 0.025, 0.030, 0.035, 0.040, 0.045, 0.050)  # s
+
+# A gripper whose delay varies from toss to toss, drawn per trial by catch.close_latency.  The
+# trigger still assumes ASSUMED_LATENCY, as it does at every constant level, because a real one
+# could not know the draw.  The mean is the midpoint of the constant sweep's 5 and 50 ms ends.
+LATENCY_MEAN = 0.0275  # s
+# 0.0025 s is a gripper that repeats to about a control period.  0.013679 s is the wider reading:
+# it puts the 5th percentile on 5 ms and the 95th on 50 ms, (0.050 - 0.005) / (2 * norm.ppf(0.95)),
+# so it spans the whole constant sweep and about 2% of its draws clip at 0.  Rounded to the
+# microsecond: write_csv keeps 12 significant digits, and a sigma that does not survive that round
+# trip is written to the file but can never be selected back out of it again.
+LATENCY_SIGMAS = (0.0025, 0.013679)  # s
 
 # Toss noise and sensor noise together: the same grid Approach A's window was chosen from.
 CROSS_SIGMAS_P = (0.0, 0.002, 0.003, 0.005)  # m
@@ -79,6 +90,9 @@ def grid() -> list[ReplanConfig]:
     for latency in LATENCIES:
         if latency != trials.TrialConfig.latency:
             configs += cells((BASELINE, A, B), **_latency_settings(latency))
+    for sigma_latency in LATENCY_SIGMAS:
+        configs += cells((BASELINE, A, B), latency=LATENCY_MEAN, sigma_latency=sigma_latency,
+                         assumed_latency=ASSUMED_LATENCY)
     configs += cells((A, B), obs_mode=sensing.POSITION_AND_VELOCITY)
     configs += cells((BASELINE,), sigma_lat=0.06)
     for sigma_lat in CROSS_SIGMAS_LAT:
@@ -110,7 +124,8 @@ class Row:
 
 def select(results, approach, trial_set=0, **settings) -> Row:
     """The rows of one cell.  Settings left out are the nominal ones."""
-    wanted = {**NOMINAL, "obs_mode": sensing.POSITION_ONLY, "latency": trials.TrialConfig.latency, **settings}
+    wanted = {**NOMINAL, "obs_mode": sensing.POSITION_ONLY, "latency": trials.TrialConfig.latency,
+              "sigma_latency": 0.0, **settings}
     if approach == BASELINE:
         wanted["sigma_p"] = 0.0
     return Row([r for r in results if r.approach == approach and r.trial // N_TRIALS == trial_set
@@ -201,10 +216,10 @@ def movement_table(results) -> list[str]:
     return lines
 
 
-def metric_table(results) -> list[str]:
-    """Every metric on the final list, at the nominal cell."""
+def metric_table(results, **settings) -> list[str]:
+    """Every metric on the final list, at one cell.  No settings means the nominal cell."""
     lines = ["| metric | baseline | A | B |", "|---|---|---|---|"]
-    rows = [select(results, approach).results for approach in APPROACHES]
+    rows = [select(results, approach, **settings).results for approach in APPROACHES]
 
     def add(name, value):
         lines.append(f"| {name} | " + " | ".join(value(group) for group in rows) + " |")
@@ -232,6 +247,79 @@ def metric_table(results) -> list[str]:
     return lines
 
 
+def _noise_settings(sigma_latency: float) -> dict:
+    """The settings that pick out one latency-noise cell."""
+    return dict(latency=LATENCY_MEAN, sigma_latency=sigma_latency, assumed_latency=ASSUMED_LATENCY)
+
+
+def latency_draw_table(results) -> list[str]:
+    """What the sampler actually drew, against what each cell asked for.  Every approach
+    draws the same delay on the same trial, so this reads it off the baseline's rows."""
+    lines = ["| cell | mean asked (ms) | sigma asked (ms) | drawn mean (ms) | drawn sigma (ms) | drawn 5th (ms) | "
+             "drawn 95th (ms) | clipped at 0 | same draw for every approach |",
+             "|---|---|---|---|---|---|---|---|---|"]
+    for sigma_latency in LATENCY_SIGMAS:
+        rows = {approach: select(results, approach, **_noise_settings(sigma_latency)).results for approach in APPROACHES}
+        drawn = np.array([r.latency_drawn for r in rows[BASELINE]])
+        if not len(drawn):
+            continue
+        by_trial = {approach: {r.trial: r.latency_drawn for r in group} for approach, group in rows.items()}
+        shared = all(by_trial[approach].get(r.trial) == r.latency_drawn
+                     for approach in APPROACHES for r in rows[BASELINE] if r.trial in by_trial[approach])
+        lines.append(f"| mean {1e3 * LATENCY_MEAN:.1f} ms, sigma {1e3 * sigma_latency:.1f} ms | {1e3 * LATENCY_MEAN:.1f} "
+                     f"| {1e3 * sigma_latency:.1f} | {1e3 * drawn.mean():.1f} | {1e3 * drawn.std(ddof=1):.1f} "
+                     f"| {1e3 * np.percentile(drawn, 5):.1f} | {1e3 * np.percentile(drawn, 95):.1f} "
+                     f"| {int((drawn == 0.0).sum())} of {len(drawn)} | {'yes' if shared else 'NO'} |")
+    return lines
+
+
+def realized_latency_table(results, bins: int = 5) -> list[str]:
+    """The numbers behind caught_by_realized_latency.png: each drawn cell's tosses sorted by
+    the delay they actually drew and split into equal groups, against the fixed level nearest
+    each group.  If a drawn delay is just the fixed curve sampled, the two columns agree."""
+    lines = ["| spread | delay drawn (ms) | tosses | caught, baseline / A / B | nearest fixed level | "
+             "caught of 100 there, baseline / A / B |", "|---|---|---|---|---|---|"]
+    for sigma_latency in LATENCY_SIGMAS:
+        rows = {approach: {r.trial: r for r in select(results, approach, **_noise_settings(sigma_latency)).results}
+                for approach in APPROACHES}
+        order = sorted(rows[BASELINE].values(), key=lambda r: r.latency_drawn)
+        if not order:
+            continue
+        for part in (part for part in np.array_split(np.arange(len(order)), bins) if len(part)):
+            group = [order[i] for i in part]
+            trials_in = [r.trial for r in group]
+            drawn = [r.latency_drawn for r in group]
+            level = min(LATENCIES, key=lambda level: abs(level - float(np.median(drawn))))
+            fixed = {approach: select(results, approach, **_latency_settings(level)).results for approach in APPROACHES}
+            def caught_in(approach):
+                k = sum(rows[approach][t].caught for t in trials_in if t in rows[approach])
+                return f"{k} ({100 * k / len(group):.0f}%)"
+
+            counts = " / ".join(caught_in(approach) for approach in APPROACHES)
+            there = " / ".join(f"{sum(r.caught for r in fixed[approach])}" if fixed[approach] else "-"
+                               for approach in APPROACHES)
+            lines.append(f"| sigma {1e3 * sigma_latency:.1f} ms | {1e3 * min(drawn):.1f} to {1e3 * max(drawn):.1f} "
+                         f"| {len(group)} | {counts} | {1e3 * level:.0f} ms | {there} |")
+    return lines
+
+
+def latency_cells() -> list[tuple[str, dict]]:
+    """Every close-latency cell: a heading, and the settings that pick it out."""
+    constants = [(f"{1e3 * latency:.0f} ms, fixed", _latency_settings(latency)) for latency in LATENCIES]
+    drawn = [(f"Drawn per toss, mean {1e3 * LATENCY_MEAN:.1f} ms, sigma {1e3 * sigma:.1f} ms", _noise_settings(sigma))
+             for sigma in LATENCY_SIGMAS]
+    return constants + drawn
+
+
+def latency_metric_tables(results) -> list[str]:
+    """Every metric on the final list, at every close-latency cell."""
+    lines = []
+    for heading, settings in latency_cells():
+        if any(select(results, approach, **settings).results for approach in APPROACHES):
+            lines += [f"### {heading}", ""] + metric_table(results, **settings) + [""]
+    return lines
+
+
 def write_report(results: list[ReplanResult], path: Path) -> None:
     """Write the tables below the marker in path, keeping whatever is above it."""
     above = "# How the approaches hold up\n\n"
@@ -246,6 +334,11 @@ def write_report(results: list[ReplanResult], path: Path) -> None:
         ("Vertical toss noise", factor_table(results, "sigma vertical", SIGMAS_VZ, "sigma_vz", speed)),
         (f"Close latency, with the trigger assuming {1e3 * ASSUMED_LATENCY:.0f} ms",
          factor_table(results, "real latency", LATENCIES, "latency", lambda level: f"{1e3 * level:.0f} ms")),
+        (f"Close latency drawn per toss, with the trigger still assuming {1e3 * ASSUMED_LATENCY:.0f} ms",
+         factor_table(results, "spread of the delay", LATENCY_SIGMAS, "sigma_latency",
+                      lambda level: f"sigma {1e3 * level:.1f} ms", settings_of=_noise_settings)),
+        ("What the sampler drew", latency_draw_table(results)),
+        ("A drawn delay against the fixed level nearest it", realized_latency_table(results)),
         ("Position and velocity sensing", factor_table(results, "observations", (sensing.POSITION_ONLY, sensing.POSITION_AND_VELOCITY), "obs_mode",
                                                        str, approaches=(A, B))),
         ("No noise at all", factor_table(results, "noise", ("none",), "", str,
@@ -253,6 +346,7 @@ def write_report(results: list[ReplanResult], path: Path) -> None:
         ("Tosses the nominal cell wasn't chosen from, trials 100 to 199", _fresh_table(results)),
         ("Toss noise and sensor noise together", cross_table(results)),
         ("Catches against how far the arm has to go, at the nominal cell", movement_table(results)),
+        ("Every metric at each close latency", latency_metric_tables(results)),
     ]
     lines = [GENERATED_MARKER, "",
              "Every row is 100 tosses, position-only with 30 ms of close latency unless it says otherwise, at sigma_p = 2 mm, sigma lateral = 0.04 m/s and "

@@ -133,6 +133,21 @@ def toss_velocity_noise(trial: int, sigma_lat: float, sigma_vz: float) -> np.nda
     return draw * np.array([sigma_lat, sigma_lat, sigma_vz])
 
 
+def close_latency(trial: int, latency: float = T_LATENCY, sigma_latency: float = 0.0) -> float:
+    """How long this trial's gripper really waits between the decision to close and
+    the fingers starting to move (s).  sigma_latency = 0 is the fixed delay, returned
+    without drawing, so a cell with no latency noise is what it always was.
+
+    The draw depends only on the trial, as the toss and the sensor do, so a trial is
+    the same gripper under every policy and approaches stay comparable in pairs.  It
+    is clipped at 0 because the fingers cannot start moving before the decision; with
+    a sigma wide enough to matter that clipping is worth reporting.
+    """
+    if sigma_latency <= 0:
+        return latency
+    return max(0.0, latency + sigma_latency * np.random.default_rng([SEED_ROOT, trial, 2]).normal())
+
+
 def intercept(est: Estimate, z_catch: float, t_rel: float, t_min_motion: float = T_MIN_MOTION) -> tuple[float, np.ndarray] | None:
     """When (s after release) and where the fitted flight comes down through
     z_catch, or None if it never does, or does so too soon to reach or
@@ -497,14 +512,22 @@ def build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode, late
 def simulate_catch(policy_factory, *, sigma_p=sensing.SIGMA_P, sigma_v=sensing.SIGMA_V,
                    obs_mode=sensing.POSITION_ONLY, latency=T_LATENCY, lead=None,
                    compute_latency=0.0, pad_lead=PAD_LEAD, assumed_latency=None, sigma_lat=0.0, sigma_vz=0.0,
-                   trial=0) -> CatchRun:
+                   sigma_latency=0.0, trial=0) -> CatchRun:
     """Simulate one toss and catch.  policy_factory takes a CatchPlanner and
-    returns a policy, so a policy class will do.  The toss and observation noise
-    depend only on the trial number, so a trial is the same under every policy."""
+    returns a policy, so a policy class will do.  The toss, the observation noise and
+    the gripper's delay depend only on the trial number, so a trial is the same under
+    every policy.  latency is the delay itself, or its mean if sigma_latency is given;
+    the controller is handed the delay this trial really drew, and the trigger still
+    allows for assumed_latency."""
     rng_obs = np.random.default_rng([SEED_ROOT, trial, 1])
     noise = toss_velocity_noise(trial, sigma_lat, sigma_vz)
+    drawn = close_latency(trial, latency, sigma_latency)
+    # With a drawn delay the trigger must not be told it: left to itself it would assume
+    # whatever the controller was handed, which is this trial's draw.  It gets the mean.
+    if assumed_latency is None and sigma_latency > 0:
+        assumed_latency = latency
     system, plan, controller = build_catch_system(policy_factory, rng_obs, sigma_p, sigma_v, obs_mode,
-                                                  latency, lead, compute_latency, pad_lead, assumed_latency)
+                                                  drawn, lead, compute_latency, pad_lead, assumed_latency)
     toss.draw_planned_flight(plan)
     simulator = Simulator(system)
     context = simulator.get_mutable_context()
@@ -545,8 +568,9 @@ def simulate_catch(policy_factory, *, sigma_p=sensing.SIGMA_P, sigma_v=sensing.S
     simulator.AdvanceTo(plan.t_release + T_TOSS_NOISE)
     plant_context = plant.GetMyMutableContextFromRoot(context)
     V_WB = plant.EvalBodySpatialVelocityInWorld(plant_context, ball)
-    plant.SetFreeBodySpatialVelocity(plant_context, ball,
-                                     SpatialVelocity(V_WB.rotational(), V_WB.translational() + noise))
+    # The ball is a free body whose parent frame is the world, so V_PB is V_WB.
+    plant.SetFreeBodySpatialVelocity(ball, SpatialVelocity(V_WB.rotational(), V_WB.translational() + noise),
+                                     plant_context)
     simulator.AdvanceTo(plan.q_traj.end_time())
     publish_recording()
 

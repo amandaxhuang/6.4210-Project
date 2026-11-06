@@ -281,6 +281,86 @@ class TossNoiseDrawTest(unittest.TestCase):
         np.testing.assert_allclose(catch.toss_velocity_noise(3, 1.0, 1.0), expected)
 
 
+class CloseLatencyDrawTest(unittest.TestCase):
+    """The gripper's delay, drawn per trial."""
+
+    WIDE = 0.013679028718014808  # puts the 5th percentile on 5 ms and the 95th on 50 ms
+
+    def test_no_sigma_means_the_fixed_delay(self):
+        self.assertEqual(catch.close_latency(3, 0.03, 0.0), 0.03)
+        self.assertEqual(catch.close_latency(3, 0.05), 0.05)
+
+    def test_the_delay_depends_only_on_the_trial(self):
+        """So a trial is the same gripper under every policy, and the pairing holds."""
+        self.assertEqual(catch.close_latency(3, 0.0275, 0.0025), catch.close_latency(3, 0.0275, 0.0025))
+        self.assertNotEqual(catch.close_latency(3, 0.0275, 0.0025), catch.close_latency(4, 0.0275, 0.0025))
+
+    def test_it_draws_from_its_own_stream(self):
+        """Not the toss's or the sensor's, so adding it leaves both unchanged."""
+        expected = 0.0275 + 0.0025 * np.random.default_rng([catch.SEED_ROOT, 3, 2]).normal()
+        self.assertAlmostEqual(catch.close_latency(3, 0.0275, 0.0025), expected, places=15)
+
+    def test_the_draws_have_the_mean_and_sigma_asked_for(self):
+        drawn = np.array([catch.close_latency(t, 0.0275, 0.0025) for t in range(20000)])
+        self.assertAlmostEqual(drawn.mean(), 0.0275, delta=5e-5)
+        self.assertAlmostEqual(drawn.std(ddof=1), 0.0025, delta=5e-5)
+
+    def test_the_wide_sigma_spans_5_to_50_ms(self):
+        """The task's other reading: 0.005 at the lower 5% end and 0.050 at the upper 95%."""
+        drawn = np.array([catch.close_latency(t, 0.0275, self.WIDE) for t in range(20000)])
+        self.assertAlmostEqual(np.percentile(drawn, 5), 0.005, delta=5e-4)
+        self.assertAlmostEqual(np.percentile(drawn, 95), 0.050, delta=5e-4)
+
+    def test_a_negative_draw_is_clipped_at_zero(self):
+        """The fingers cannot start moving before the decision to close."""
+        drawn = [catch.close_latency(t, 0.0275, self.WIDE) for t in range(2000)]
+        self.assertTrue(all(d >= 0.0 for d in drawn))
+        self.assertGreater(sum(d == 0.0 for d in drawn), 0)  # at this sigma about 2% clip
+        self.assertEqual(catch.close_latency(0, 0.0, 0.01), max(0.0, catch.close_latency(0, 0.0, 0.01)))
+
+
+class CloseLatencyRunTest(unittest.TestCase):
+    """A drawn delay, through a whole run."""
+
+    TRIAL = 7
+    SIGMA = 0.013679028718014808
+
+    @classmethod
+    def setUpClass(cls):
+        cls.drawn = catch.close_latency(cls.TRIAL, 0.0275, cls.SIGMA)
+        cls.catch_run = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.0, trial=cls.TRIAL,
+                                       latency=0.0275, sigma_latency=cls.SIGMA, assumed_latency=catch.T_LATENCY)
+
+    def test_the_controller_waits_the_delay_this_trial_drew(self):
+        self.assertAlmostEqual(self.catch_run.controller.latency, self.drawn, places=15)
+        self.assertNotAlmostEqual(self.drawn, 0.0275)  # this trial really drew something else
+
+    def test_the_trigger_is_not_told_the_draw(self):
+        """It allows for what it was told, so the fingers are early or late by the error."""
+        self.assertEqual(self.catch_run.controller.assumed_latency, catch.T_LATENCY)
+
+    def test_the_fingers_close_after_the_delay_this_trial_drew(self):
+        """The scorer measures the close from the drawn delay, not the mean: the fingers
+        settle after it, and the catch is held from there.  (Inward motion on its own is
+        not the close -- the fingers ring as the toss releases the ball.)"""
+        controller, log = self.catch_run.controller, self.catch_run.log
+        held, t_stopped = catch.hold_after_closing(log, controller)
+        self.assertIsNotNone(t_stopped)
+        self.assertGreater(t_stopped, controller.t_close + controller.latency)
+        # Whether it is caught is a result, not a property of the plumbing: this trial drew
+        # 40.9 ms against the 30 ms the trigger assumed, so the fingers are 11 ms late.
+        self.assertGreater(self.drawn, catch.T_LATENCY)
+        self.assertEqual(held, 0.0)
+
+    def test_a_drawn_delay_defaults_to_a_trigger_that_knows_only_the_mean(self):
+        """Left to itself the trigger would assume whatever the controller was handed,
+        which with a draw would make it clairvoyant."""
+        run = catch.simulate_catch(catch.PredictOncePolicy, sigma_p=0.0, trial=self.TRIAL,
+                                   latency=0.0275, sigma_latency=self.SIGMA)
+        self.assertEqual(run.controller.assumed_latency, 0.0275)
+        self.assertAlmostEqual(run.controller.latency, self.drawn, places=15)
+
+
 class TossNoiseTest(unittest.TestCase):
     """A perfect sensor, so that the toss noise is the only error."""
 
