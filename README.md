@@ -1,5 +1,7 @@
 # 6.4210 Robotic Manipulation Final Project
 
+[progress report](https://claude.ai/artifact/SaA4gStUfhaddejy6g8dFJ)
+
 A Drake simulation in which a KUKA iiwa 14 with a Schunk WSG 50 gripper tosses a ball upward and
 catches it with the same gripper. The question is how the arm should use noisy observations of the
 ball to guide the catch, so three strategies are compared on identical tosses, under increasing
